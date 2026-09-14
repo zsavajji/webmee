@@ -42,7 +42,7 @@ next read (`BrowserEngine::onEngineOutput`).
 | `nav <canBack> <canForward>` | History availability. |
 | `failed <msg>` | Load failure. `failed web process <reason>` and `failed TLS <flags> (<uri>)` are distinguished by prefix. |
 | `scroll <y>` | Scroll position in CSS pixels. Drives the URL bar's hide-on-scroll. Reported by an injected user script through a script message handler — event-driven, throttled to 8 px in the page, `capture: true` so nested scrollers report too. |
-| `ime <0\|1>` | The page focused or blurred an editable. The only signal that the on-screen keyboard should open. |
+| `ime <0\|1>` | Whether an editable is focused — a **state**, not an edge, and the only signal the on-screen keyboard has. Repeats are suppressed. Reported on focus in/out, and also whenever the focused field is destroyed rather than blurred: at `WEBKIT_LOAD_COMMITTED` and on web-process termination. |
 | `imerect <x> <y> <w> <h>` | Caret rectangle in CSS pixels, for keeping the keyboard off it. |
 
 ## Text input
@@ -69,6 +69,25 @@ is unset — nothing depends on it here.)
 
 Verified end to end on device: `text Hello` -> `Hello`, `text 42` ->
 `Hello42`, Backspace -> `Hello4`.
+
+**WebKit reports focus-out when a page blurs a field, but not when the document
+carrying it is replaced.** Submitting a form is exactly that: the field is
+focused, Return navigates, the old document goes away, and no focus-out is ever
+emitted — so a shell that closes the keyboard on `ime 0` leaves it up forever.
+Measured by driving the engine standalone against a page with a focused input
+and then issuing `load`:
+
+```
+ime 1                      field focused
+loading 1 / url about:blank   navigated away
+loading 0                  ...and no ime 0
+```
+
+The engine therefore reports it itself, from `WEBKIT_LOAD_COMMITTED` rather than
+`WEBKIT_LOAD_STARTED`. A started load can still be cancelled, and claiming
+focus-out for a field that is in fact still focused is the worse failure: WebKit
+does not emit focus-in again for a field that never lost focus, so the keyboard
+would never come back.
 
 ## Scrolling inside a page element does not work yet
 

@@ -64,6 +64,18 @@ Page {
                 Label { text: qsTr("Load images"); anchors.verticalCenter: parent.verticalCenter }
             }
 
+            Row {
+                spacing: 16
+                Switch {
+                    checked: engine.suggestionsEnabled
+                    onCheckedChanged: engine.suggestionsEnabled = checked
+                }
+                Label {
+                    text: qsTr("Address bar suggestions")
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+            }
+
             Label { text: qsTr("Page width"); font.pixelSize: 24 }
 
             // Wider lays out more CSS pixels in BOTH directions, so it is also the
@@ -128,6 +140,21 @@ Page {
             }
 
             Label {
+                text: qsTr("History: %1 entries").arg(history.count)
+                font.pixelSize: 20
+                color: "#999999"
+            }
+
+            // Confirmed, unlike the cache: a cache rebuilds itself by browsing,
+            // history does not come back.
+            Button {
+                text: qsTr("Clear history")
+                enabled: history.count > 0
+                opacity: enabled ? 1 : 0.4
+                onClicked: clearHistoryConfirm.open()
+            }
+
+            Label {
                 text: qsTr("Free memory: %1 MB").arg(memory.availableMb)
                 font.pixelSize: 20
                 color: memory.level === 0 ? "#999999" : (memory.level === 1 ? "#ddaa33" : "#ff5555")
@@ -136,6 +163,16 @@ Page {
     }
 
     ScrollDecorator { flickableItem: flick }
+
+    QueryDialog {
+        id: clearHistoryConfirm
+        titleText: qsTr("Clear history")
+        message: qsTr("Remove all %1 saved pages? This cannot be undone.")
+                 .arg(history.count)
+        acceptButtonText: qsTr("Clear")
+        rejectButtonText: qsTr("Cancel")
+        onAccepted: history.clear()
+    }
 
     // Outside the Column deliberately. Dialog takes its width from its parent
     // and centres itself in it, so as a Column child it would be laid out as

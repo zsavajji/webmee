@@ -11,7 +11,7 @@
 # compression".
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
-VERSION="${VERSION:-0.1}"
+VERSION="${VERSION:-0.2.4}"
 ARCH=armel
 DEB="$ROOT/out/arm/deb"
 OUT="$ROOT/out/WebMee_${VERSION}_${ARCH}.deb"

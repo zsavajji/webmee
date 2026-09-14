@@ -19,6 +19,23 @@ Page {
     // its own height never changes and the surface is never resized.
     property real toolBarHeight: (pageStack && pageStack.toolBar) ? pageStack.toolBar.height : 0
 
+    // How much the platform has taken off the window for the on-screen keyboard.
+    // Window.qml shrinks windowContent by exactly this and everything inside it
+    // follows, which resizes the page area and relayouts the page -- the one
+    // thing this design avoids everywhere else. The web view adds it back as a
+    // negative margin, so the keyboard ends up floating over a page that never
+    // changed size.
+    //
+    // The portrait branch is the platform's, not a guess: the panel rectangle is
+    // in unrotated framebuffer coordinates, so its WIDTH is what covers the
+    // bottom of a portrait screen. Read it from the same source and the same way
+    // or the two will not cancel.
+    property real sipHeight: (inputContext && inputContext.softwareInputPanelVisible)
+                             ? (appWindow.inPortrait
+                                ? inputContext.softwareInputPanelRect.width
+                                : inputContext.softwareInputPanelRect.height)
+                             : 0
+
     // The platform's own toolbar transition is 500 ms; the URL bar's is 180.
     // Give the toolbar ours so the two move as one piece of chrome. Every other
     // ToolBarStyle default is inherited.
@@ -38,17 +55,17 @@ Page {
     // scroll. Everything is converted to CSS pixels, because that is the only
     // unit both sides agree on.
     function ensureCaretVisible() {
-        if (webViewArea.width <= 0 || engine.caretH <= 0)
-            return;
-        var panel = inputContext ? inputContext.softwareInputPanelRect : null;
-        if (!panel || panel.height <= 0)
+        if (webViewArea.width <= 0 || engine.caretH <= 0 || page.sipHeight <= 0)
             return;
 
-        // Where the keyboard starts, in item pixels.
-        var keyboardTopInItem = panel.y - webViewArea.mapToItem(null, 0, 0).y;
+        // The web view now reaches the bottom of the window and the keyboard is
+        // anchored there, so the keyboard's top edge is simply that much up from
+        // the item's bottom -- no mapping between coordinate systems, and no
+        // dependence on which way the panel rectangle is oriented.
         var cssPerItemPx = engine.layoutWidth / webViewArea.width;
         // The page's first row is drawn at topInset, not at the item's top.
-        var visibleBottomCss = (keyboardTopInItem - webViewArea.topInset) * cssPerItemPx;
+        var visibleBottomCss = (webViewArea.height - page.sipHeight - webViewArea.topInset)
+                               * cssPerItemPx;
         // The caret is reported relative to the viewport, not the document.
         var caretBottomCss = engine.caretY + engine.caretH;
 
@@ -89,6 +106,14 @@ Page {
         property int lastY: 0
         Connections {
             target: engine
+            // Any navigation ends the address bar's editing session, including
+            // ones that never touched it -- a link tap or a form submit moves no
+            // focus by itself, so the field kept it and the suggestions stayed
+            // up over the page that was loading.
+            onLoadingChanged: if (engine.loading && urlField.activeFocus) {
+                urlField.focus = false;
+                urlField.platformCloseSoftwareInputPanel();
+            }
             onScrollChanged: {
                 var y = engine.scrollY;
                 if (y < 24 || urlField.activeFocus)
@@ -115,9 +140,9 @@ Page {
             placeholderText: qsTr("Search or enter address")
             // Show the live URL unless the user is editing it.
             text: engine.url
-            onActiveFocusChanged: {
-                if (activeFocus) { selectAllTimer.restart(); suggestions.refresh() }
-                else suggestions.hide()
+            onActiveFocusChanged: if (activeFocus) {
+                selectAllTimer.restart();
+                suggestions.refresh();
             }
 
             // Selecting inline does not survive: TextField's internal TextInput
@@ -278,7 +303,12 @@ Page {
         height: Math.min(visibleRows * rowHeight, page.height - urlBar.height - 40)
         color: theme.inverted ? "#101010" : "#f4f4f4"
         visible: opacity > 0
-        opacity: 0
+        // Open if and only if the address bar has focus and there is something
+        // to show. A BINDING, not an assignment: urlField.text is bound to
+        // engine.url, so every navigation fires onTextChanged -> refresh(), and
+        // an assigned opacity was therefore free to re-open the list behind the
+        // user on a page they had already navigated to.
+        opacity: engine.suggestionsEnabled && urlField.activeFocus && visibleRows > 0 ? 1 : 0
         z: 10
 
         property int rowHeight: 68
@@ -288,13 +318,12 @@ Page {
 
         Behavior on opacity { NumberAnimation { duration: 120 } }
 
+        // Only the contents: whether the list is SHOWN is the binding above,
+        // and assigning opacity here would quietly break it.
         function refresh() {
             matches = history.suggest(urlField.text, 5);
-            opacity = visibleRows > 0 ? 1 : 0;
         }
-        function hide() { opacity = 0 }
         function go(url) {
-            hide();
             urlField.focus = false;
             // A method of the TextField, not a global: calling it bare from
             // here threw a ReferenceError and silently abandoned the rest of
@@ -305,7 +334,6 @@ Page {
         // Enter follows the same rule the list shows, so what you see is what
         // you get rather than two different guesses.
         function accept(text) {
-            hide();
             urlField.focus = false;
             urlField.platformCloseSoftwareInputPanel();
             page.navigate(text);
@@ -394,7 +422,7 @@ Page {
         // exactly what PageStackWindow took off the content area for it -- so
         // the two cancel and the height is constant whatever the toolbar does.
         anchors { top: parent.top; left: parent.left; right: parent.right; bottom: parent.bottom
-                  bottomMargin: -page.toolBarHeight }
+                  bottomMargin: -(page.toolBarHeight + page.sipHeight) }
         // ...so the chrome's height comes out of what is DRAWN instead. The page
         // starts below the URL bar and stops above the toolbar rather than
         // running under either, which is what makes those rows tappable. Both

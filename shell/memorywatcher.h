@@ -58,7 +58,7 @@ signals:
     void pressure(int level);      // transitions only, so handlers do not thrash
 
 private slots:
-    void onCgroupEvent();
+    void onCgroupEvent(int fd);
     void sampleMeminfo();
 
 private:

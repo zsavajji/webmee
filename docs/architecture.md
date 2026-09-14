@@ -285,12 +285,27 @@ is what made typing both slow and capitalised. Auto-capitalisation is disabled
 outright for the same reason — the buffer's contents are not the page's, so the
 keyboard would be deciding "start of a sentence" from the wrong text.
 
+**The keyboard floats over the page; it does not shrink it.** The platform does
+the opposite by default: `Window.qml` shrinks `windowContent` by the panel's
+height, and everything inside follows — so opening the keyboard resized the page
+area and relayouted the page, which is the one thing this design avoids
+everywhere else. The web view adds that height back as a negative bottom margin,
+exactly as it does for the toolbar, and keeps a constant height with the keyboard
+overlaying its lower part.
+
+Match the platform's own branch when reading the panel size: the rectangle is in
+unrotated framebuffer coordinates, so in portrait it is the rect's **width** that
+covers the bottom of the screen. Read it from a different field and the two no
+longer cancel.
+
 The caret is kept clear of the keyboard by measuring the overlap in the shell:
-WebKit does not know the keyboard exists. The caret rectangle (`imerect`) and
-`inputContext.softwareInputPanelRect` are converted to CSS pixels — the only
-unit both sides agree on — and the difference is sent as `scrollby`. Measurement
-waits 400 ms because the panel animates open and its rectangle is not final when
-focus arrives.
+WebKit does not know the keyboard exists. Now that the view reaches the bottom of the
+window and the keyboard is anchored there, the keyboard's top edge is simply
+that height up from the item's bottom — no mapping between coordinate systems
+and no dependence on the rectangle's orientation. That and the caret rectangle
+(`imerect`) are converted to CSS pixels, the only unit both sides agree on, and
+the difference is sent as `scrollby`. Measurement waits 400 ms because the panel
+animates open and its rectangle is not final when focus arrives.
 
 ## Input
 
@@ -329,7 +344,11 @@ the docs are explicit and the name is misleading. WPE 2.44 exposes no equivalent
 for the web process.
 
 The shell runs its own pressure watcher on the `/syspart` cgroup eventfd
-(`shell/memorywatcher.cpp`) and sheds caches in stages. The cache model is
+(`shell/memorywatcher.cpp`) and sheds caches in stages. Those eventfds are
+`EFD_NONBLOCK` and each is drained only by the notifier that fired: this watcher
+runs on the UI thread, and a blocking read there stops the shell draining the
+engine, which deadlocks the whole browser rather than merely delaying a
+measurement. The cache model is
 `WEBKIT_CACHE_MODEL_DOCUMENT_BROWSER`, not `WEB_BROWSER`, which caches "a very
 large number of resources" — the wrong trade here.
 

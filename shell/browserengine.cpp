@@ -56,6 +56,7 @@ BrowserEngine::BrowserEngine(QObject *parent)
     // install starts from; Settings overrides it and the choice sticks.
     , m_javascript(false)
     , m_images(true)
+    , m_suggestions(true)
     , m_uaPreset("mobile")
     , m_searchEngine("DuckDuckGo")
     , m_diskCacheMb(64)
@@ -90,6 +91,7 @@ BrowserEngine::BrowserEngine(QObject *parent)
         m_layoutWidth = cfg.value("layout/width", m_layoutWidth).toInt();
         m_javascript = cfg.value("content/javascript", m_javascript).toBool();
         m_images = cfg.value("content/images", m_images).toBool();
+        m_suggestions = cfg.value("suggestions/enabled", m_suggestions).toBool();
         // An install from before the base width changed has 320 persisted, and
         // the settings page no longer offers it -- it would show 345 selected
         // while the engine used 320. Migrate rather than leave them disagreeing.
@@ -562,6 +564,14 @@ void BrowserEngine::setJavascriptEnabled(bool on)
     m_javascript = on;
     persist("content/javascript", m_javascript);
     emit settingsChanged();     // applied by commitSettings()
+}
+
+void BrowserEngine::setSuggestionsEnabled(bool on)
+{
+    if (m_suggestions == on) return;
+    m_suggestions = on;
+    persist("suggestions/enabled", m_suggestions);
+    emit settingsChanged();     // nothing to commit: the engine never sees this
 }
 
 void BrowserEngine::setImagesEnabled(bool on)

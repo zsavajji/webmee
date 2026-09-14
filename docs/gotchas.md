@@ -64,6 +64,21 @@ window's own client can act that early.
 **`XCompositeNameWindowPixmap` on a dead window aborts the app.** Xlib's default
 error handler exits. Install a temporary error trap around those calls.
 
+**The whole browser freezes and never recovers, with every process asleep.**
+Not overload — check `wchan` before assuming it is. All four processes in `S`
+with `utime+stime` frozen and `Cached` still in the hundreds of MB is a
+deadlock, not memory pressure. The shell sat in `eventfd_read`: `MemoryWatcher`
+created its eventfds with `eventfd(0, 0)` and drained *both* whenever *either*
+fired, so a blocking read on the one with a zero counter parked the Qt event
+loop until the kernel happened to cross the other threshold. Everything else
+followed from that — the shell stopped draining the engine's stdout, the
+backpressure `printf("frame\n")` filled the 64 KB pipe and blocked, and WebKit
+never received its frame-complete.
+
+Two rules out of it: **an eventfd read from an event loop must be
+`EFD_NONBLOCK`**, and **drain only the descriptor that fired** —
+`QSocketNotifier::activated(int)` hands you the fd, so use it.
+
 ## Process and environment
 
 **The engine dies with "could not create the EGL display".** applauncherd gives
@@ -92,6 +107,13 @@ the load starts. Use the environment for initial state.
 
 **`QFile::atEnd()` is useless on procfs** — size 0 means the loop never runs and
 you silently read zeros. Use `fopen`/`fgets`/`sscanf`.
+
+**Opening the keyboard relayouts the page.** `Window.qml` shrinks
+`windowContent` by the panel height, so every item inside gets shorter. Cancel it
+on the web view with a negative bottom margin and let the keyboard overlay
+instead. Read the panel size the way the platform does — in portrait that is
+`softwareInputPanelRect.width`, because the rectangle is in unrotated
+framebuffer coordinates.
 
 **Hiding the platform toolbar relayouts the page.** `PageStackWindow` anchors
 its content area with `bottomMargin: toolBar.height` and the hidden `ToolBar`
@@ -186,6 +208,14 @@ dpkg cannot read zstd/xz. Use `dpkg-deb -Zgzip`.
 to the wrong path because a `cp` flattened `lib/wpe-webkit-2.0/`. WebKit
 `dlopen`s it by absolute path, and a missing bundle is not reported as a load
 error. `deploy.sh` asserts the critical paths now.
+
+**The keyboard will not go away after pressing Enter in a page field.** WebKit
+emits focus-out when a page blurs a field, but not when the document holding it
+is replaced — and a form submit does exactly that. No `ime 0`, so nothing ever
+tells the shell to close the panel. The engine reports it from
+`WEBKIT_LOAD_COMMITTED` instead (not `STARTED`: a cancelled load would leave a
+still-focused field with no way to reopen the keyboard, since WebKit will not
+emit focus-in for a field that never lost focus).
 
 **Cookies work all session and are gone at the next start.** A persistent
 `WebKitNetworkSession` does not imply a persistent cookie jar —

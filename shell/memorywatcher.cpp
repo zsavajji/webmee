@@ -112,7 +112,11 @@ bool MemoryWatcher::setupCgroup()
 // registration, and fires when usage crosses it in EITHER direction.
 bool MemoryWatcher::registerThreshold(int usageBytesThreshold, QSocketNotifier **outNotifier, int *outEventFd)
 {
-    int efd = ::eventfd(0, 0);
+    // EFD_NONBLOCK is not optional. This fd is read from the Qt event loop --
+    // the UI thread -- and a blocking read on an eventfd whose counter is zero
+    // sleeps until somebody writes. That somebody is the kernel crossing a
+    // memory threshold, so the whole shell stops until memory happens to move.
+    int efd = ::eventfd(0, EFD_NONBLOCK);
     if (efd < 0)
         return false;
 
@@ -125,7 +129,7 @@ bool MemoryWatcher::registerThreshold(int usageBytesThreshold, QSocketNotifier *
 
     *outEventFd = efd;
     *outNotifier = new QSocketNotifier(efd, QSocketNotifier::Read, this);
-    connect(*outNotifier, SIGNAL(activated(int)), this, SLOT(onCgroupEvent()));
+    connect(*outNotifier, SIGNAL(activated(int)), this, SLOT(onCgroupEvent(int)));
     return true;
 }
 
@@ -171,12 +175,18 @@ void MemoryWatcher::stop()
     teardownCgroup();
 }
 
-void MemoryWatcher::onCgroupEvent()
+void MemoryWatcher::onCgroupEvent(int fd)
 {
-    // The eventfd counter must be drained or the notifier re-fires forever.
+    // Drain ONLY the descriptor that fired. QSocketNotifier is level-triggered,
+    // so the one that woke us has to be emptied or it re-fires forever -- but
+    // the other one has nothing pending, and reading it was what hung the UI
+    // thread: the shell then never drained the engine's stdout, the engine's
+    // "frame" write filled the pipe and blocked, WebKit never got its
+    // frame-complete, and nothing could wake any of it again. The freeze that
+    // never recovers.
     uint64_t counter = 0;
-    if (m_lowEventFd >= 0)      { ssize_t r = ::read(m_lowEventFd, &counter, sizeof(counter)); (void)r; }
-    if (m_criticalEventFd >= 0) { ssize_t r = ::read(m_criticalEventFd, &counter, sizeof(counter)); (void)r; }
+    ssize_t r = ::read(fd, &counter, sizeof(counter));
+    (void) r;                        // EAGAIN is fine: the fd is non-blocking
     recompute();
 }
 

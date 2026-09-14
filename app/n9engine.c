@@ -111,6 +111,10 @@ static void emit(const char *fmt, ...)
     fflush(stdout);          /* the shell reads line by line */
 }
 
+/* Defined with the input-method context below; used from the load and crash
+   handlers above it. */
+static void set_ime_focus(gboolean focused);
+
 static void send_nav(void)
 {
     if (!view) return;
@@ -128,6 +132,13 @@ static void on_load_changed(WebKitWebView *v, WebKitLoadEvent event, gpointer d)
         emit("url %s", webkit_web_view_get_uri(v) ? webkit_web_view_get_uri(v) : "");
         break;
     case WEBKIT_LOAD_COMMITTED:
+        /* The old document is gone from here, so anything it had focused is
+           gone with it. COMMITTED rather than STARTED: a load that is started
+           can still be cancelled, and reporting focus-out for a field that is
+           in fact still focused is worse than reporting it late -- WebKit does
+           not emit focus-in again for a field that never lost focus, so the
+           keyboard would not come back at all. */
+        set_ime_focus(FALSE);
         emit("url %s", webkit_web_view_get_uri(v) ? webkit_web_view_get_uri(v) : "");
         send_nav();
         break;
@@ -325,6 +336,8 @@ static void on_web_process_terminated(WebKitWebView *v,
     fprintf(stderr, "[n9engine] web process %s\n", why);
     emit("failed web process %s", why);
     emit("loading 0");
+    /* Same reason: the field that was focused died with the process. */
+    set_ime_focus(FALSE);
 }
 
 /*
@@ -374,16 +387,37 @@ G_DEFINE_TYPE(N9ImContext, n9_im_context, WEBKIT_TYPE_INPUT_METHOD_CONTEXT)
 
 static N9ImContext *im_context = NULL;
 
+/*
+ * "ime" is a STATE, not an edge, and the engine is the only thing that can keep
+ * it honest. WebKit reports focus-in for a field and focus-out when the page
+ * blurs it -- but NOT when the document itself goes away. Submitting a form is
+ * exactly that case: the field is focused, Return navigates, the document is
+ * replaced, and no focus-out is ever emitted. The shell, which closes the
+ * keyboard only on "ime 0", then leaves it up forever.
+ *
+ * So every path that destroys the focused field reports it here, and the state
+ * is tracked so repeats cost nothing.
+ */
+static gboolean ime_focused = FALSE;
+
+static void set_ime_focus(gboolean focused)
+{
+    if (ime_focused == focused)
+        return;
+    ime_focused = focused;
+    emit("ime %d", focused ? 1 : 0);
+}
+
 static void n9_im_focus_in(WebKitInputMethodContext *c)
 {
     (void) c;
-    emit("ime 1");
+    set_ime_focus(TRUE);
 }
 
 static void n9_im_focus_out(WebKitInputMethodContext *c)
 {
     (void) c;
-    emit("ime 0");
+    set_ime_focus(FALSE);
 }
 
 /* Where the caret is, so the shell can keep the keyboard off it. */

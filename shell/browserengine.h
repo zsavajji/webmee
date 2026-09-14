@@ -46,6 +46,10 @@ class BrowserEngine : public QObject
     Q_PROPERTY(bool javascriptEnabled READ javascriptEnabled WRITE setJavascriptEnabled NOTIFY settingsChanged)
     Q_PROPERTY(bool imagesEnabled READ imagesEnabled WRITE setImagesEnabled NOTIFY settingsChanged)
     Q_PROPERTY(QString userAgentPreset READ userAgentPreset WRITE setUserAgentPreset NOTIFY settingsChanged)
+    // Purely a shell preference -- the engine is never told. It lives here
+    // because this is where persisted settings live, and splitting that would
+    // give the same setting two owners.
+    Q_PROPERTY(bool suggestionsEnabled READ suggestionsEnabled WRITE setSuggestionsEnabled NOTIFY settingsChanged)
 
     // --- caching -----------------------------------------------------------
     // Sized for this device, not by WebKit's RAM-proportional defaults, which
@@ -73,6 +77,8 @@ public:
 
     bool javascriptEnabled() const { return m_javascript; }
     void setJavascriptEnabled(bool on);
+    bool suggestionsEnabled() const { return m_suggestions; }
+    void setSuggestionsEnabled(bool on);
     bool imagesEnabled() const { return m_images; }
     void setImagesEnabled(bool on);
     QString userAgentPreset() const { return m_uaPreset; }
@@ -212,6 +218,7 @@ private:
 
     bool m_javascript;
     bool m_images;
+    bool m_suggestions;
     QString m_uaPreset;
     QString m_searchEngine;
 
