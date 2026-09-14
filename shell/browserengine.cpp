@@ -18,6 +18,27 @@
 // user can see.
 static const char *kEnginePrefix = "/opt/n9browser";
 
+// One place for the file and one for the write. The recurring bug in this
+// project is a setting that updates a member and reaches the engine but is
+// never written down, or is written under a key nothing reads back -- and both
+// look exactly like a working setting until the app is restarted. Anything
+// added here has to appear in BOTH the constructor's load and a persist() call,
+// so keep the two lists next to each other.
+static QString settingsDir()
+{
+    return QDir::homePath() + "/.config/WebMee";
+}
+
+static QString settingsFile()
+{
+    return settingsDir() + "/settings.conf";
+}
+
+static void persist(const char *key, const QVariant &value)
+{
+    QSettings(settingsFile(), QSettings::IniFormat).setValue(key, value);
+}
+
 BrowserEngine::BrowserEngine(QObject *parent)
     : QObject(parent)
     , m_progress(0)
@@ -25,7 +46,11 @@ BrowserEngine::BrowserEngine(QObject *parent)
     , m_canGoBack(false)
     , m_canGoForward(false)
     , m_historyIndex(-1)
-    , m_javascript(true)
+    // JavaScript defaults OFF on this device. Measured: identical CPU with it on
+    // or off, and 3.6x the frames with it off -- a page's scripts occupy the one
+    // core rather than burning it. Persisted, so this is only the value a fresh
+    // install starts from; Settings overrides it and the choice sticks.
+    , m_javascript(false)
     , m_images(true)
     , m_uaPreset("mobile")
     , m_searchEngine("DuckDuckGo")
@@ -50,13 +75,17 @@ BrowserEngine::BrowserEngine(QObject *parent)
     // /home/user/.cache, not MyDocs: MyDocs is FAT and exported over USB, so a
     // cache there would be visible clutter and could vanish mid-session when
     // the phone is plugged into a PC.
+    // QSettings will not create this, and BrowserEngine is constructed before
+    // the stores that do -- so do not rely on their order.
+    QDir().mkpath(settingsDir());
     {
-        QSettings cfg(QDir::homePath() + "/.config/WebMee/settings.conf",
-                      QSettings::IniFormat);
+        QSettings cfg(settingsFile(), QSettings::IniFormat);
         m_searchEngine = cfg.value("search/engine", m_searchEngine).toString();
         m_renderScale = cfg.value("render/scale", m_renderScale).toDouble();
         m_uaPreset = cfg.value("ua/preset", m_uaPreset).toString();
         m_layoutWidth = cfg.value("layout/width", m_layoutWidth).toInt();
+        m_javascript = cfg.value("content/javascript", m_javascript).toBool();
+        m_images = cfg.value("content/images", m_images).toBool();
         // An install from before the base width changed has 320 persisted, and
         // the settings page no longer offers it -- it would show 345 selected
         // while the engine used 320. Migrate rather than leave them disagreeing.
@@ -91,6 +120,16 @@ void BrowserEngine::startEngine()
     connect(m_engine, SIGNAL(finished(int, QProcess::ExitStatus)),
             SLOT(onEngineFinished(int, QProcess::ExitStatus)));
 
+    // Read before the environment is built, so the hook, the engine and the UI
+    // all agree. "=0" means on: with JavaScript defaulting off, the useful
+    // override is turning it back ON for a measurement.
+    const QByteArray jsHook = qgetenv("N9_NO_JS");
+    if (!jsHook.isEmpty())
+        m_javascript = (jsHook == "0");
+    const QByteArray imgHook = qgetenv("N9_NO_IMAGES");
+    if (!imgHook.isEmpty())
+        m_images = (imgHook == "0");
+
     QStringList env = QProcess::systemEnvironment();
     // applauncherd's environment has no DISPLAY -- Qt reaches X through the
     // booster, the engine cannot. Pass the display Qt is actually on rather
@@ -106,6 +145,18 @@ void BrowserEngine::startEngine()
     // layout a site serves.
     env << QString("N9_USER_AGENT=%1").arg(userAgentString());
     env << QString("N9_LAYOUT_WIDTH=%1").arg(m_layoutWidth);
+    // Same reason, and the one that actually matters now that JavaScript
+    // defaults off: "ready" is emitted immediately before load_uri, so a
+    // "set javascript 0" sent in reply lands after the first page has already
+    // started loading with scripts enabled. Always a value, never bare presence
+    // -- the engine has to be able to hear "on" too.
+    // The list is seeded from our own environment, so drop any inherited copy
+    // rather than depend on which of two entries for one key the child sees.
+    for (int i = env.size() - 1; i >= 0; --i)
+        if (env.at(i).startsWith("N9_NO_JS=") || env.at(i).startsWith("N9_NO_IMAGES="))
+            env.removeAt(i);
+    env << QString("N9_NO_JS=%1").arg(m_javascript ? 0 : 1);
+    env << QString("N9_NO_IMAGES=%1").arg(m_images ? 0 : 1);
     env << QString("N9_CACHE_DIR=%1").arg(m_diskCachePath);
     env << QString("N9_DATA_DIR=%1").arg(m_dataPath);
     // Prepend any inherited path rather than replacing it: since libwpe
@@ -148,9 +199,6 @@ void BrowserEngine::startEngine()
         qWarning() << "BrowserEngine: no engine at" << exe;
         return;
     }
-    if (!qgetenv("N9_NO_JS").isEmpty())
-        m_javascript = false;
-
     // N9_STARTUP_URL exists so the whole shell-to-engine path can be exercised
     // without going through the touchscreen.
     QString startup = QString::fromLocal8Bit(qgetenv("N9_STARTUP_URL"));
@@ -326,8 +374,7 @@ void BrowserEngine::setSearchEngine(const QString &name)
     if (m_searchEngine == name || !searchEngines().contains(name))
         return;
     m_searchEngine = name;
-    QSettings(QDir::homePath() + "/.config/WebMee/settings.conf", QSettings::IniFormat)
-        .setValue("search/engine", m_searchEngine);
+    persist("search/engine", m_searchEngine);
     emit settingsChanged();
 }
 
@@ -411,8 +458,7 @@ void BrowserEngine::setLayoutWidth(int px)
     if (px < 240 || px > 1024 || px == m_layoutWidth)
         return;
     m_layoutWidth = px;
-    QSettings(QDir::homePath() + "/.config/WebMee/settings.conf", QSettings::IniFormat)
-        .setValue("layout/width", m_layoutWidth);
+    persist("layout/width", m_layoutWidth);
     emit settingsChanged();     // applied by commitSettings()
 }
 
@@ -421,8 +467,7 @@ void BrowserEngine::setRenderScale(double scale)
     if (scale < 0.25 || scale > 4.0 || qFuzzyCompare(m_renderScale, scale))
         return;
     m_renderScale = scale;
-    QSettings(QDir::homePath() + "/.config/WebMee/settings.conf", QSettings::IniFormat)
-        .setValue("render/scale", m_renderScale);
+    persist("render/scale", m_renderScale);
     emit settingsChanged();     // applied by commitSettings()
 }
 
@@ -494,6 +539,7 @@ void BrowserEngine::setJavascriptEnabled(bool on)
 {
     if (m_javascript == on) return;
     m_javascript = on;
+    persist("content/javascript", m_javascript);
     emit settingsChanged();     // applied by commitSettings()
 }
 
@@ -501,6 +547,7 @@ void BrowserEngine::setImagesEnabled(bool on)
 {
     if (m_images == on) return;
     m_images = on;
+    persist("content/images", m_images);
     emit settingsChanged();     // applied by commitSettings()
 }
 
@@ -522,8 +569,7 @@ void BrowserEngine::setUserAgentPreset(const QString &preset)
 {
     if (m_uaPreset == preset) return;
     m_uaPreset = preset;
-    QSettings(QDir::homePath() + "/.config/WebMee/settings.conf", QSettings::IniFormat)
-        .setValue("ua/preset", m_uaPreset);
+    persist("ua/preset", m_uaPreset);
     emit settingsChanged();     // applied by commitSettings()
 }
 

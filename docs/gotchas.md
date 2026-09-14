@@ -187,6 +187,11 @@ to the wrong path because a `cp` flattened `lib/wpe-webkit-2.0/`. WebKit
 `dlopen`s it by absolute path, and a missing bundle is not reported as a load
 error. `deploy.sh` asserts the critical paths now.
 
+**Cookies work all session and are gone at the next start.** A persistent
+`WebKitNetworkSession` does not imply a persistent cookie jar —
+`webkit_cookie_manager_set_persistent_storage()` has to be called or the jar is
+memory-only, and nothing says so. It presents as sites forgetting logins.
+
 **HTTPS fails everywhere.** glib-networking is a **runtime GIO module** — nothing
 links it, so a missing one produces no build error, just
 "TLS support is not available" at runtime. The engine logs the backend at
@@ -211,6 +216,33 @@ else — cache size, JavaScript, images, and the user agent. The UI existed, the
 value persisted, and nothing reached the engine. **When adding a setting, verify
 the engine actually received it**, not that the UI updated.
 
+Then the same class of bug turned up at the other end: JavaScript and images
+*did* reach the engine and were never written to disk, so they worked perfectly
+until the app was restarted. A setting needs **three** things and any one of
+them can be missing without a symptom until much later:
+
+1. a write — `persist(key, value)` in the setter,
+2. a read — `cfg.value(key, ...)` in `BrowserEngine`'s constructor,
+3. delivery to the engine — `commitSettings()`, or the environment for anything
+   that must be true for the first page.
+
+The two halves of persistence are checkable without the device, which is the
+cheapest test this repo has:
+
+```sh
+diff <(grep -o 'persist("[^"]*"'   shell/browserengine.cpp | sed 's/.*("//;s/"//' | sort) \
+     <(grep -o 'cfg.value("[^"]*"' shell/browserengine.cpp | sed 's/.*("//;s/"//' | sort)
+```
+
+A key on one side only is a setting that does not stick, or dead state in the
+file.
+
+Related: **a setting can be persisted, applied, and still miss the first page.**
+The environment mechanism for this existed and simply was not used for
+JavaScript or images — the shell sent them only over the protocol, which lands
+after `load_uri`. It was invisible while the startup URL was `about:blank` and
+became load-bearing the moment JavaScript defaulted to off.
+
 Related: **initial settings must go through the environment**, not the protocol.
 `ready` is emitted immediately before the first `load_uri`, so anything sent in
 reply arrives after the load has started — which is why the first "JS off" test
@@ -229,6 +261,13 @@ handler abandons the rest of the function silently.
 
 **An off-screen focus target needs `opacity: 0`, not `visible: false`** — an
 invisible item cannot take focus.
+
+**A page does not scroll and its last rows are missing.** A bare `Column` on a
+`Page` neither flicks nor clips: content taller than the screen simply runs off
+the bottom, silently. Wrap it in a `Flickable` with `contentHeight`, `clip:
+true` and a `ScrollDecorator`. Keep `Dialog`s (and `SelectionDialog`) **out** of
+the Column — a dialog takes its width from its parent and centres itself in it,
+so inside scrolling content it becomes another row centred on the wrong thing.
 
 ## Tooling
 

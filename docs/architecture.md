@@ -327,7 +327,8 @@ large number of resources" — the wrong trade here.
 
 | what | where | how |
 |---|---|---|
-| HTTP cache, cookies | `~/.cache/WebMee`, `~/.local/share/WebMee` | `WebKitNetworkSession`, created explicitly |
+| HTTP cache | `~/.cache/WebMee` | `WebKitNetworkSession`, created explicitly |
+| cookies | `~/.local/share/WebMee/cookies.db` | `webkit_cookie_manager_set_persistent_storage`, SQLite |
 | favourites | `~/.config/WebMee/bookmarks.conf` | QSettings INI |
 | history | `~/.config/WebMee/history.conf` | QSettings INI, capped at 400 |
 | settings | `~/.config/WebMee/settings.conf` | QSettings INI |
@@ -337,6 +338,26 @@ The engine **must** be given an explicit `WebKitNetworkSession`. Without one the
 view falls back to `webkit_network_session_get_default()`, which is persistent
 but uses WebKit's own directories — so the cache silently worked while the UI
 reported on a directory nothing ever wrote to.
+
+**A persistent session is not a persistent cookie jar**, and the two are easy to
+conflate. `webkit_network_session_new()` gives the session persistent
+*directories*; the cookie jar is separate and, in WebKit's own words, "by
+default, `cookie_manager` doesn't store the cookies persistently, so you need to
+call this method to keep cookies saved across sessions". Nothing reports the
+omission: cookies work for the whole session and are simply gone at the next
+start, which presents as sites forgetting logins rather than as a storage
+failure.
+
+The path comes from `webkit_website_data_manager_get_base_data_directory()`,
+not from `N9_DATA_DIR` — that variable is unset when the shell did not pass one,
+and WebKit then picks its own directory. Deriving the location twice is the same
+mistake as the cache one above. The jar is **SQLite**, not the Mozilla text
+format: the text jar rewrites the whole file on every cookie change. Both
+`soup_cookie_jar_db_new` and `soup_cookie_jar_text_new` are present in our
+libsoup.
+
+Only *non-session* cookies are written — ones with an expiry. Session cookies
+are supposed to die with the process.
 
 Clearing goes *through WebKit* (`webkit_website_data_manager_clear`), never by
 deleting files: WebKit holds them open, and deleting underneath it corrupts the

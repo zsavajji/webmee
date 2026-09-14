@@ -34,6 +34,7 @@
 #include <wpe/wpe.h>
 #include <glib.h>
 #include <glib-unix.h>
+#include <glib/gstdio.h>
 #include <gio/gio.h>
 #include <dlfcn.h>
 #include <stdio.h>
@@ -202,6 +203,15 @@ static unsigned layout_width(void)
     const char *e = getenv("N9_LAYOUT_WIDTH");
     unsigned v = e ? (unsigned) atoi(e) : (unsigned) N9_LAYOUT_WIDTH;
     return v ? v : (unsigned) N9_LAYOUT_WIDTH;
+}
+
+/* Presence is NOT the test. The shell passes these on every launch, so it must
+   be able to say "on" as well as "off" -- and an inherited N9_NO_JS=0, which
+   reads to everyone as "do not disable", would otherwise disable. */
+static gboolean env_flag(const char *name)
+{
+    const char *v = getenv(name);
+    return v && *v && strcmp(v, "0") != 0;
 }
 
 /* Settable at runtime, so the sharp/fast trade can be judged on the device
@@ -612,6 +622,40 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[n9engine] cache dir %s\n",
             cache_dir ? cache_dir : "(webkit default)");
 
+    /* A persistent SESSION is not a persistent COOKIE JAR. WebKit's own docs on
+       webkit_cookie_manager_set_persistent_storage are explicit: "By default,
+       cookie_manager doesn't store the cookies persistently, so you need to
+       call this method to keep cookies saved across sessions." Nothing reports
+       the omission -- cookies work perfectly all session and are simply gone at
+       the next start, which reads as a login problem rather than a storage one.
+
+       Ask the data manager where the data actually went instead of reusing
+       data_dir: it is NULL when the shell did not pass one, and WebKit then
+       picks its own. Deriving the path a second time is what had the shell
+       reporting on a cache directory nothing ever wrote to.
+
+       SQLite, not TEXT: the text jar rewrites the whole file on every change,
+       and cookies change constantly. Both jars are present in our libsoup. */
+    {
+        WebKitWebsiteDataManager *data_manager =
+            webkit_network_session_get_website_data_manager(session);
+        const char *base = webkit_website_data_manager_get_base_data_directory(data_manager);
+        if (base) {
+            /* soup opens the jar in the network process and will not create the
+               directory for it; a missing one fails silently, like everything
+               else about this path. */
+            g_mkdir_with_parents(base, 0700);
+            char *jar = g_build_filename(base, "cookies.db", NULL);
+            webkit_cookie_manager_set_persistent_storage(
+                webkit_network_session_get_cookie_manager(session), jar,
+                WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+            fprintf(stderr, "[n9engine] cookie jar %s\n", jar);
+            g_free(jar);
+        } else {
+            fprintf(stderr, "[n9engine] no data directory -- cookies will NOT persist\n");
+        }
+    }
+
     WebKitWebContext *context = webkit_web_context_new();
     /* DOCUMENT_BROWSER, not WEB_BROWSER: the latter caches "a very large number
        of resources and previously viewed content", the wrong trade on 350 MB. */
@@ -679,7 +723,7 @@ int main(int argc, char *argv[])
        be true for the very first page comes in through the environment. */
     {
         WebKitSettings *st = webkit_web_view_get_settings(view);
-        if (getenv("N9_NO_JS")) {
+        if (env_flag("N9_NO_JS")) {
             webkit_settings_set_enable_javascript(st, FALSE);
             fprintf(stderr, "[n9engine] javascript disabled\n");
         }
@@ -691,7 +735,7 @@ int main(int argc, char *argv[])
             webkit_settings_set_user_agent(st, ua);
             fprintf(stderr, "[n9engine] user agent: %s\n", ua);
         }
-        if (getenv("N9_NO_IMAGES")) {
+        if (env_flag("N9_NO_IMAGES")) {
             webkit_settings_set_auto_load_images(st, FALSE);
             fprintf(stderr, "[n9engine] images disabled\n");
         }

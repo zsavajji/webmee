@@ -49,6 +49,11 @@ package.sh  build the installable .deb
 
 ## State
 
+JavaScript defaults to **off** — one core, and a page's scripts hold it rather
+than burn it (3.6x the frames with it off; see
+[docs/performance.md](docs/performance.md)). Settings → JavaScript turns it on
+and the choice sticks.
+
 Working and verified on device: flexbox/grid/custom-property layout, JIT,
 GPU compositing in portrait, HTTPS, disk cache, touch input with
 drag-to-scroll, pinch magnification, favourites, downloads, history

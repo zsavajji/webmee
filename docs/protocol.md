@@ -78,7 +78,15 @@ not carry the way the code assumes. Unfinished, do not rely on it.
 - **`ready` is emitted immediately before the initial `load_uri`.** Anything the
   shell sends in response arrives *after* that load has begun. Settings that must
   apply to the first page therefore come through the **environment**, not the
-  protocol (`N9_NO_JS`, `N9_NO_IMAGES`).
+  protocol (`N9_NO_JS`, `N9_NO_IMAGES`, `N9_USER_AGENT`, `N9_LAYOUT_WIDTH`).
+
+  Having the mechanism is not the same as using it: the shell knew the persisted
+  JavaScript setting and passed it only over the protocol, so the first page of
+  every launch loaded with scripts enabled however the switch was set. With
+  JavaScript now defaulting off that is the difference between the default
+  working and not. A setting that must hold for the first page needs an entry in
+  **both** the environment block and the `ready` handler — the second is what
+  keeps the shell authoritative when the engine is restarted.
 
 - **`wpe_view_backend_dispatch_*` is a silent no-op before WebKit registers as
   the backend client.** libwpe guards every dispatch on `backend->backend_client`.
@@ -113,7 +121,7 @@ Set by `BrowserEngine::startEngine()`.
 | `SSL_CERT_FILE` | OpenSSL's `openssldir` is inside our tree, and the device's 2011 CA store predates most roots in use today. |
 | `FONTCONFIG_FILE` | Our fonts.conf, not the device's. |
 | `N9_VIEW_RECT`, `N9_LAYOUT_WIDTH` | Initial geometry and the CSS width to lay out to (default 320). |
-| `N9_NO_JS`, `N9_NO_IMAGES` | Initial settings, applied before the first load. |
+| `N9_NO_JS`, `N9_NO_IMAGES` | Initial content settings, applied before the first load. Sent on **every** launch carrying the persisted value, `1` or `0` — the engine tests the value, not presence, so it can be told "on" as well as "off". `N9_NO_JS=0` is the way to force JavaScript on for a measurement, since it now defaults off. |
 
 ## Test hooks
 

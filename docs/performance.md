@@ -78,9 +78,17 @@ This is why JIT tuning did not help github: an A/B there measured 1547 vs 1544
 ticks, i.e. nothing. The microbenchmark gain is real, but github's scroll was
 never JIT-bound.
 
-**Disabling JS is not an acceptable answer** — JS is a large part of the modern
-web, and the browser has to run it. The toggle stays in Settings as a user
-choice, not as a performance strategy. Optimisation has to come from the engine.
+**JavaScript therefore defaults to OFF**, and is a switch in Settings. This
+reverses an earlier position in this file — that disabling JS was not an
+acceptable answer because the modern web needs it. The measurement above is why:
+on this hardware the cost is not cycles that a faster engine could win back, it
+is one core being held by the page. Nothing in the engine recovers a 3.6x frame
+gap.
+
+The trade is real and the user pays it: sites that render nothing without
+scripts show nothing until the switch is flipped. The setting persists, so it is
+flipped once. Engine-side optimisation is still the only thing that helps a page
+that genuinely needs its JavaScript.
 
 ## Render scale: user-switchable, effect unmeasured
 
