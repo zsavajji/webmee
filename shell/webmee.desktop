@@ -1,0 +1,14 @@
+[Desktop Entry]
+Encoding=UTF-8
+Version=1.0
+Type=Application
+Terminal=false
+Name=WebMee
+Comment=A modern web engine for the N9
+# invoker, not the bare binary: applauncherd is what registers the window with
+# the compositor, and without it the status bar renders black on black.
+Exec=/usr/bin/invoker --single-instance --type=d /opt/n9browser/bin/WebMee
+Icon=/usr/share/icons/hicolor/80x80/apps/webmee80.png
+X-Window-Icon=
+X-HildonDesk-ShowInToolbar=true
+X-Osso-Type=application/x-executable

@@ -1,0 +1,22 @@
+<!doctype html><meta charset=utf-8><title>bench starting</title>
+<body style="background:#111;color:#eee;font:16px sans-serif"><pre id=o>running…</pre>
+<script>
+function ms(f){var t=Date.now();f();return Date.now()-t;}
+var r=[];
+// 1. integer/call heavy -- shows baseline JIT tiering
+r.push(["fib27", ms(function(){function fib(n){return n<2?n:fib(n-1)+fib(n-2);}fib(27);})]);
+// 2. tight numeric loop -- shows DFG
+r.push(["loop3M", ms(function(){var s=0;for(var i=0;i<3000000;i++)s+=i%7;return s;})]);
+// 3. property access / hidden classes
+r.push(["props", ms(function(){var a=[];for(var i=0;i<200000;i++)a.push({x:i,y:i*2});var s=0;for(var j=0;j<a.length;j++)s+=a[j].x+a[j].y;return s;})]);
+// 4. string building -- ropes/GC
+r.push(["strings", ms(function(){var s="";for(var i=0;i<60000;i++)s+=i;return s.length;})]);
+// 5. array sort -- library + comparator calls
+r.push(["sort", ms(function(){var a=[];for(var i=0;i<120000;i++)a.push((i*2654435761)%1000000);a.sort(function(p,q){return p-q;});return a[0];})]);
+// 6. JSON round trip
+r.push(["json", ms(function(){var o=[];for(var i=0;i<20000;i++)o.push({i:i,s:"v"+i});var t=JSON.stringify(o);return JSON.parse(t).length;})]);
+var total=0; for(var k=0;k<r.length;k++) total+=r[k][1];
+var line=r.map(function(p){return p[0]+"="+p[1];}).join(" ")+" total="+total;
+document.getElementById('o').textContent=line.replace(/ /g,"\n");
+document.title="BENCH "+line;
+</script>

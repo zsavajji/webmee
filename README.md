@@ -1,0 +1,57 @@
+# WebMee
+
+A modern web engine for the Nokia N9 (MeeGo 1.2 Harmattan, 2011).
+
+WPE WebKit 2.44.4 with JIT and GPU compositing, wrapped in a Qt Components
+shell that looks like the stock Harmattan browser. It renders contemporary
+layouts — flexbox, CSS grid, custom properties — that the device's own
+QtWebKit 2.2 cannot.
+
+```
+┌──────────────────────────┐        ┌────────────────────────────┐
+│ WebMee (shell)           │        │ webmee-engine              │
+│ Qt 4.7.4 / QML1          │ stdio  │ WPE WebKit 2.44.4          │
+│ GCC 4.4 (Harmattan SDK)  │◄──────►│ GCC 14.2 (cross)           │
+│                          │        │  ├─ WPEWebProcess          │
+│ draws the page as a      │        │  └─ WPENetworkProcess      │
+│ GLES2 texture            │        │                            │
+└──────────┬───────────────┘        └────────────┬───────────────┘
+           │      XComposite: engine's X window  │
+           └──────── redirected, sampled ────────┘
+```
+
+## Documentation
+
+| Document | What is in it |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | **Why this engine** (WPE 2.44.4, not Chromium or newer), process model, compositing, viewport and zoom design |
+| [docs/device.md](docs/device.md) | Measured hardware and OS facts. **Read before assuming anything about this device** |
+| [docs/protocol.md](docs/protocol.md) | The shell ↔ engine line protocol, normative |
+| [docs/building.md](docs/building.md) | Toolchains, build order, packaging, and the traps in each |
+| [docs/debugging.md](docs/debugging.md) | Probes, crash capture without gdb, and the env vars that make the app testable |
+| [docs/performance.md](docs/performance.md) | What was measured, what helped, what did not, and the harnesses to resume with |
+| [docs/qml-components.md](docs/qml-components.md) | Which QML types actually exist on the device, probed rather than assumed |
+| [docs/gotchas.md](docs/gotchas.md) | Catalogue of everything that cost real time, with the evidence |
+
+## Layout
+
+```
+app/        engine process (n9engine.c) + build script
+backend/    WPE backend: X11/EGL window, input, crash handler
+shell/      Qt/QML shell: UI, texture compositing, stores
+deps/       cross-build scripts for the whole dependency stack
+probe/      standalone device probes (GL limits, shader replay, crash capture)
+icon/       icon generator (pure Python, no dependencies)
+docs/       this documentation
+deploy.sh   assemble + push the on-device tree
+package.sh  build the installable .deb
+```
+
+## State
+
+Working and verified on device: flexbox/grid/custom-property layout, JIT,
+GPU compositing in portrait, HTTPS, disk cache, touch input with
+drag-to-scroll, pinch magnification, favourites, downloads, history
+suggestions, memory-pressure shedding, password storage via signond.
+
+Known gaps are listed at the end of [docs/architecture.md](docs/architecture.md).

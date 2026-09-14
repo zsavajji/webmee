@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="icon/webmee192.png">../icon/webmee192.png</file>
+        <file>qml/main.qml</file>
+        <file>qml/BrowserPage.qml</file>
+        <file>qml/TabsSheet.qml</file>
+        <file>qml/SettingsPage.qml</file>
+        <file>qml/DownloadsPage.qml</file>
+        <file>qml/BookmarksPage.qml</file>
+    </qresource>
+</RCC>
