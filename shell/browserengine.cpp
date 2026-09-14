@@ -18,6 +18,10 @@
 // user can see.
 static const char *kEnginePrefix = "/opt/n9browser";
 
+// XK_Return. The QML side sends the same keysym for a real Return key press;
+// this is for the newline the virtual keyboard commits as text instead.
+static const int kKeysymReturn = 0xFF0D;
+
 // One place for the file and one for the write. The recurring bug in this
 // project is a setting that updates a member and reaches the engine but is
 // never written down, or is written under a key nothing reads back -- and both
@@ -480,10 +484,27 @@ void BrowserEngine::sendText(const QString &text)
 {
     if (text.isEmpty())
         return;
-    // One line, so a newline in the text would corrupt the protocol.
+    // A newline is not text. Return is a KEY, and a page is entitled to act on
+    // it -- submit the form, send the message -- which it can only do if it
+    // arrives as a key event rather than as a character to insert. The virtual
+    // keyboard delivers Enter as a committed "\n" rather than as a key event,
+    // so this is the path it actually takes.
+    //
+    // This used to replace newlines with spaces, which silently changed what
+    // was typed. They still cannot go on the wire as-is: the protocol is one
+    // message per line.
     QString flat = text;
-    flat.replace('\n', ' ');
-    send("text " + flat);
+    flat.replace("\r\n", "\n");
+    flat.replace('\r', '\n');
+    const QStringList lines = flat.split('\n');
+    for (int i = 0; i < lines.size(); ++i) {
+        if (i > 0) {
+            sendKey(kKeysymReturn, true);
+            sendKey(kKeysymReturn, false);
+        }
+        if (!lines.at(i).isEmpty())
+            send("text " + lines.at(i));
+    }
 }
 
 void BrowserEngine::sendKey(int keysym, bool pressed)

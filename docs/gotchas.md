@@ -262,6 +262,20 @@ handler abandons the rest of the function silently.
 **An off-screen focus target needs `opacity: 0`, not `visible: false`** — an
 invisible item cannot take focus.
 
+**Enter inserts a line break instead of submitting the form.** The virtual
+keyboard delivers Enter as a committed `"\n"`, not as a key event, so it
+arrived on the `text` path — where it was being replaced with a space, silently
+changing what was typed. Split on newlines and send `key 65293` instead: a page
+can only act on Return if Return actually happens.
+
+**The keyboard lags and re-capitalises after every letter.** Both from the same
+line: clearing the capture field's `text` after each keystroke. Setting `text`
+programmatically calls `updateMicroFocus()`, an IPC round trip to the
+input-method server on every letter — and it hands that server an *empty* field,
+which is exactly when a keyboard switches auto-capitalisation back on. Forward
+the appended substring instead and empty the buffer only on focus out, with
+nothing focused to notice.
+
 **A page does not scroll and its last rows are missing.** A bare `Column` on a
 `Page` neither flicks nor clips: content taller than the screen simply runs off
 the bottom, silently. Wrap it in a `Flickable` with `contentHeight`, `clip:

@@ -80,10 +80,11 @@ never JIT-bound.
 
 **JavaScript therefore defaults to OFF**, and is a switch in Settings. This
 reverses an earlier position in this file — that disabling JS was not an
-acceptable answer because the modern web needs it. The measurement above is why:
-on this hardware the cost is not cycles that a faster engine could win back, it
-is one core being held by the page. Nothing in the engine recovers a 3.6x frame
-gap.
+acceptable answer because the modern web needs it. That position was held and
+then abandoned on use, not on the numbers: the browser is simply not usable with
+scripts on. The measurement explains why no amount of engine work would have
+rescued it. The cost is not cycles a faster engine could win back, it is one
+core being held by the page, and nothing recovers a 3.6x frame gap.
 
 The trade is real and the user pays it: sites that render nothing without
 scripts show nothing until the switch is flipped. The setting persists, so it is

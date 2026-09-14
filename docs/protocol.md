@@ -22,7 +22,7 @@ next read (`BrowserEngine::onEngineOutput`).
 | `layoutwidth <css px>` | CSS pixels the page lays out to (base 345). Wider means more CSS pixels in **both** directions, so this is also the knob for "the page does not fit vertically". |
 | `renderscale <n>` | Device pixels rasterised per CSS pixel. 1.0 = Fast (rasterise small, upscale), 1.5 = Sharp (match the panel 1:1). Does not change layout. |
 | `useragent <string>` | Rest of the line, spaces included. |
-| `text <utf8>` | Typed text, committed into the focused field. |
+| `text <utf8>` | Typed text, committed into the focused field. Never contains a newline: the shell splits on them and sends `key 65293` around the pieces, so Enter reaches the page as a key press and can submit a form. |
 | `key <keysym> <0\|1>` | An editing key as an xkb keysym (Backspace `65288`, Return `65293`, arrows `65361`–`65364`). |
 | `scrollby <dx> <dy>` | Scroll the page, in CSS pixels. Used to lift the caret clear of the keyboard. |
 | `axis <x> <y> <dx> <dy>` | A wheel event. **Unproven** — see the note below. |
@@ -57,6 +57,15 @@ Text goes back in through the context's **`committed` signal**, not synthesised
 key events: WebKit inserts the string directly, which handles multi-byte
 characters and predictive input that a keysym stream cannot express. Editing
 keys still need real key events via `key`.
+
+**Return is an editing key, not text**, even though the keyboard delivers it as
+a committed `"\n"`. Committed as text it inserts a line break; a page cannot
+submit on it, because nothing it can listen for has happened. `sendText()`
+therefore splits on newlines and emits `key 65293` between the pieces. Verified
+against `Shared/libwpe/WebEventFactory.cpp`: keysym `0xFF0D` produces
+`key: "Enter"`, `windowsKeyCode: VK_RETURN` and text `"\r"`, which is what a
+form submit listens for. (`hardware_key_code` stays 0, so `KeyboardEvent.code`
+is unset — nothing depends on it here.)
 
 Verified end to end on device: `text Hello` -> `Hello`, `text 42` ->
 `Hello42`, Backspace -> `Hello4`.

@@ -275,6 +275,16 @@ Three pieces, all of which are needed:
 3. **Text back into the page** — via the context's `committed` signal for
    characters, and real key events for editing keys.
 
+That capture field is **not** a mirror of the page's field and must not be
+managed like one. It never learns what the page's field contains, Backspace is
+consumed and forwarded as a keysym rather than deleting locally, and only the
+text appended since the last change is sent. It is emptied on focus out and at
+no other time: writing to `text` while an input method is attached costs an IPC
+round trip per letter and resets the keyboard's auto-capitalisation state, which
+is what made typing both slow and capitalised. Auto-capitalisation is disabled
+outright for the same reason — the buffer's contents are not the page's, so the
+keyboard would be deciding "start of a sentence" from the wrong text.
+
 The caret is kept clear of the keyboard by measuring the overlap in the shell:
 WebKit does not know the keyboard exists. The caret rectangle (`imerect`) and
 `inputContext.softwareInputPanelRect` are converted to CSS pixels — the only

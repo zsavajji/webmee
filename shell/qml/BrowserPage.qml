@@ -199,7 +199,11 @@ Page {
         // Not visible:false -- an invisible item cannot take focus, and without
         // focus the software input panel has nothing to open for.
         activeFocusOnPress: false
-        inputMethodHints: Qt.ImhNoPredictiveText
+        // NoAutoUppercase because this buffer is not the page's field and its
+        // contents are not the page's contents -- so the keyboard's idea of
+        // "start of a sentence" is derived from the wrong text. It cannot guess
+        // right, so it should not guess. Shift still works.
+        inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
 
         Connections {
             target: engine
@@ -210,6 +214,9 @@ Page {
                 } else {
                     pageInput.closeSoftwareInputPanel();
                     pageInput.focus = false;
+                    // Only now, with nothing focused and no input method
+                    // listening, is it safe to empty the buffer -- see below.
+                    pageInput.text = "";
                 }
             }
         }
@@ -235,8 +242,30 @@ Page {
             event.accepted = true;
         }
 
-        // The field never holds anything itself; it is only an input target.
-        onTextChanged: if (text.length > 0) { engine.sendText(text); text = "" }
+        // Send only what was appended, and do NOT clear between keystrokes.
+        //
+        // Clearing was the cause of both of this field's symptoms. Setting text
+        // programmatically moves the cursor and calls updateMicroFocus(), which
+        // is an IPC round trip to the input-method server -- once per letter, on
+        // top of the one the insert already costs. That is the lag. And it hands
+        // the server an EMPTY field, which is precisely the state in which a
+        // keyboard turns auto-capitalisation back on: hence the shift flipping
+        // up again after every single letter.
+        //
+        // The buffer therefore only grows, and is emptied on focus out.
+        // Backspace never shrinks it -- Keys.onPressed consumes it and sends a
+        // keysym to the page instead -- so the buffer is not a mirror of the
+        // page's field and is not meant to be. It is a capture device, and only
+        // the delta is ever forwarded.
+        property string sentText: ""
+        onTextChanged: {
+            if (text.length > sentText.length
+                    && text.substring(0, sentText.length) === sentText)
+                engine.sendText(text.substring(sentText.length));
+            // Anything else -- the clear on focus out, or the method rewriting
+            // what it already committed -- resyncs without sending.
+            sentText = text;
+        }
     }
 
     // ---- Address bar suggestions -----------------------------------------
