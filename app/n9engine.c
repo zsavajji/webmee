@@ -17,12 +17,17 @@
  *        renderscale <pixels per css pixel> | useragent <string>
  *        axis <x> <y> <dx> <dy> | layoutwidth <css px>
  *        text <utf8> | key <keysym> <0|1> | scrollby <dx> <dy>
+ *        authok <b64user> <b64pass> | authcancel
+ *        dlcancel <uri> | dlsave <uri>
  *   out: ... | ime <0|1> | imerect <x> <y> <w> <h>
  *        clearcache | clearcookies | quit
  *   out: ... | surface <w> <h>
  *   out: url <s> | title <s> | progress <0..1> | loading <0|1> | scroll <y>
  *        nav <canBack> <canForward> | failed <msg> | ready
- *        window <xid> | frame
+ *        window <xid> | frame | auth <retry> <host[:port]> <realm>
+ *        link <uri> | image <uri> | dlstart <total> <b64path> <uri>
+ *        dlprogress <received> <total> <uri> | dlfinish <b64path> <uri>
+ *        dlfail <b64error> <uri>
  *
  * Usage: n9engine [url]
  */
@@ -178,6 +183,182 @@ static gboolean on_tls_error(WebKitWebView *v, const char *uri,
     return FALSE;      /* let the load fail as usual */
 }
 
+/*
+ * Long press on a link.
+ *
+ * WPE's TouchGestureController turns a press held past 500 ms into a context
+ * menu request (contextMenuThreshold in TouchGestureController.cpp), which
+ * arrives here as the "context-menu" signal. There is no menu UI in the WPE
+ * port at all, so the proposed WebKitContextMenu is of no use to us -- what is
+ * worth having is the hit test result, which names the link under the finger.
+ * The shell draws the menu with the platform's own, as the stock browser does.
+ *
+ * Returning TRUE always: it suppresses a menu that would never be drawn, and
+ * says the event is handled so nothing else acts on it.
+ */
+/* TWO arguments, not three. The GTK port and WPE's pre-2022 API pass a GdkEvent
+   in the middle, and WebKitWebViewWPE1.cpp declares the signal that way -- but
+   this is the 2022 GLib API, so WebKitWebViewWPE2.cpp is what compiles and the
+   event parameter is omitted from both the signal and the emit. Declaring the
+   extra parameter silently shifts everything along: the hit test lands in the
+   user_data slot and the handler sees NULL. */
+static gboolean on_context_menu(WebKitWebView *v, WebKitContextMenu *menu,
+                                WebKitHitTestResult *hit, gpointer d)
+{
+    (void) v; (void) menu; (void) d;
+    if (!hit)
+        return TRUE;
+    /* A linked image is both. The link wins: the stock browser offers the link
+       menu there, and the image is still reachable by pressing a bare one. */
+    if (webkit_hit_test_result_context_is_link(hit)) {
+        const char *uri = webkit_hit_test_result_get_link_uri(hit);
+        if (uri && *uri)
+            emit("link %s", uri);
+    } else if (webkit_hit_test_result_context_is_image(hit)) {
+        const char *uri = webkit_hit_test_result_get_image_uri(hit);
+        if (uri && *uri)
+            emit("image %s", uri);
+    }
+    return TRUE;
+}
+
+/*
+ * Downloads.
+ *
+ * Nothing downloaded before this: there was no decide-policy handler, so a link
+ * to a file WebKit cannot display simply did nothing, and the shell's
+ * DownloadManager was a model driven by a fake timer with no caller.
+ *
+ * It has to be the engine and not the shell. Qt 4.7.4's QSslSocket cannot
+ * complete a handshake with a modern server, so anything the shell fetched over
+ * https would fail; the engine already has working TLS through libsoup.
+ *
+ * Keyed by uri, because that is what the shell's model is keyed by.
+ */
+static GHashTable *downloads = NULL;      /* uri -> WebKitDownload*, borrowed */
+
+static char *b64dup(const char *s)
+{
+    return g_base64_encode((const guchar *) (s ? s : ""), s ? strlen(s) : 0);
+}
+
+static const char *download_uri(WebKitDownload *dl)
+{
+    WebKitURIRequest *req = webkit_download_get_request(dl);
+    const char *uri = req ? webkit_uri_request_get_uri(req) : NULL;
+    return uri ? uri : "";
+}
+
+static guint64 download_total(WebKitDownload *dl)
+{
+    WebKitURIResponse *res = webkit_download_get_response(dl);
+    return res ? webkit_uri_response_get_content_length(res) : 0;
+}
+
+/* The server's suggested name is the user's filename; only disambiguate it. */
+static char *unique_path(const char *suggested)
+{
+    const char *dir = getenv("N9_DOWNLOAD_DIR");
+    if (!dir || !*dir)
+        dir = "/home/user/MyDocs/Downloads";
+    g_mkdir_with_parents(dir, 0755);
+
+    const char *base = (suggested && *suggested) ? suggested : "download";
+    char *path = g_build_filename(dir, base, NULL);
+    for (int n = 1; n < 1000 && g_file_test(path, G_FILE_TEST_EXISTS); ++n) {
+        g_free(path);
+        const char *dot = strrchr(base, '.');
+        char *stem = dot ? g_strndup(base, (gsize) (dot - base)) : g_strdup(base);
+        char *name = g_strdup_printf("%s-%d%s", stem, n, dot ? dot : "");
+        path = g_build_filename(dir, name, NULL);
+        g_free(stem);
+        g_free(name);
+    }
+    return path;
+}
+
+static gboolean on_decide_destination(WebKitDownload *dl, const char *suggested, gpointer d)
+{
+    (void) d;
+    char *path = unique_path(suggested);
+    /* An absolute PATH, not a URI: this is the 2022 GLib API, which asserts
+       g_path_is_absolute on it. */
+    webkit_download_set_destination(dl, path);
+
+    const char *uri = download_uri(dl);
+    g_hash_table_insert(downloads, g_strdup(uri), dl);
+
+    char *b = b64dup(path);
+    emit("dlstart %" G_GUINT64_FORMAT " %s %s", download_total(dl), b, uri);
+    g_free(b);
+    g_free(path);
+    return TRUE;                       /* we decided; do not use the default */
+}
+
+static void on_download_received(WebKitDownload *dl, guint64 length, gpointer d)
+{
+    (void) length; (void) d;
+    guint64 got = webkit_download_get_received_data_length(dl);
+    /* received-data fires per chunk. One protocol line each would flood a pipe
+       the shell also uses for frames, and the shell throttles the engine by not
+       draining it -- so report per 64 KiB instead. */
+    guint64 last = (guint64) GPOINTER_TO_SIZE(g_object_get_data(G_OBJECT(dl), "n9-last"));
+    if (got - last < 65536)
+        return;
+    g_object_set_data(G_OBJECT(dl), "n9-last", GSIZE_TO_POINTER((gsize) got));
+    emit("dlprogress %" G_GUINT64_FORMAT " %" G_GUINT64_FORMAT " %s",
+         got, download_total(dl), download_uri(dl));
+}
+
+static void on_download_finished(WebKitDownload *dl, gpointer d)
+{
+    (void) d;
+    const char *dest = webkit_download_get_destination(dl);
+    char *b = b64dup(dest);
+    emit("dlfinish %s %s", b, download_uri(dl));
+    g_free(b);
+    g_hash_table_remove(downloads, download_uri(dl));
+}
+
+static void on_download_failed(WebKitDownload *dl, GError *error, gpointer d)
+{
+    (void) d;
+    /* A cancel arrives here too; the shell already knows it asked for that. */
+    char *b = b64dup(error ? error->message : "download failed");
+    emit("dlfail %s %s", b, download_uri(dl));
+    g_free(b);
+    g_hash_table_remove(downloads, download_uri(dl));
+}
+
+static void on_download_started(WebKitNetworkSession *sess, WebKitDownload *dl, gpointer d)
+{
+    (void) sess; (void) d;
+    g_signal_connect(dl, "decide-destination", G_CALLBACK(on_decide_destination), NULL);
+    g_signal_connect(dl, "received-data", G_CALLBACK(on_download_received), NULL);
+    g_signal_connect(dl, "finished", G_CALLBACK(on_download_finished), NULL);
+    g_signal_connect(dl, "failed", G_CALLBACK(on_download_failed), NULL);
+}
+
+/*
+ * Turn a response WebKit cannot display into a download.
+ *
+ * Without this the click on a .zip is simply dropped: WebKit asks what to do,
+ * nothing answers, and the default is to try to display content it has already
+ * said it cannot.
+ */
+static gboolean on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *decision,
+                                 WebKitPolicyDecisionType type, gpointer d)
+{
+    (void) v; (void) d;
+    if (type != WEBKIT_POLICY_DECISION_TYPE_RESPONSE)
+        return FALSE;
+    WebKitResponsePolicyDecision *r = WEBKIT_RESPONSE_POLICY_DECISION(decision);
+    if (webkit_response_policy_decision_is_mime_type_supported(r))
+        return FALSE;                  /* let it render as usual */
+    webkit_policy_decision_download(decision);
+    return TRUE;
+}
+
 static gboolean on_load_failed(WebKitWebView *v, WebKitLoadEvent e,
                                const char *uri, GError *error, gpointer d)
 {
@@ -185,6 +366,94 @@ static gboolean on_load_failed(WebKitWebView *v, WebKitLoadEvent e,
     emit("failed %s", error ? error->message : "unknown error");
     emit("loading 0");
     return FALSE;
+}
+
+/*
+ * HTTP authentication.
+ *
+ * The WPE port's default "authenticate" handler is `return FALSE` -- there is
+ * no built-in dialog, and an unanswered challenge just loads the server's 401.
+ * That is what "I cannot open password-protected sites" looks like: not an
+ * error, a page saying Unauthorized.
+ *
+ * The prompt belongs to the shell, so the request is parked here and answered
+ * by command. Returning TRUE with a ref held is the documented way to handle
+ * this signal asynchronously.
+ */
+static WebKitAuthenticationRequest *auth_request = NULL;
+
+static gboolean on_authenticate(WebKitWebView *v, WebKitAuthenticationRequest *req,
+                                gpointer d)
+{
+    (void) v; (void) d;
+
+    /* Only the schemes a username and a password can answer. A client
+       certificate or a PIN needs something this prompt does not have, and
+       claiming to handle those would leave the request hanging for good. */
+    switch (webkit_authentication_request_get_scheme(req)) {
+    case WEBKIT_AUTHENTICATION_SCHEME_DEFAULT:
+    case WEBKIT_AUTHENTICATION_SCHEME_HTTP_BASIC:
+    case WEBKIT_AUTHENTICATION_SCHEME_HTTP_DIGEST:
+    case WEBKIT_AUTHENTICATION_SCHEME_NTLM:
+    case WEBKIT_AUTHENTICATION_SCHEME_NEGOTIATE:
+        break;
+    default:
+        return FALSE;
+    }
+
+    /* ponytail: one challenge at a time. A second arriving while the first is
+       still on screen continues without credentials rather than queueing --
+       add a queue if that turns out to matter. It mostly cannot: the answer is
+       stored FOR_SESSION, so the first one covers the whole protection space
+       and the rest of the page's subresources never ask. */
+    if (auth_request) {
+        webkit_authentication_request_authenticate(auth_request, NULL);
+        g_object_unref(auth_request);
+    }
+    auth_request = g_object_ref(req);
+
+    /* The port is worth showing only when it is not the scheme's own -- a
+       prompt that says "example.com:443" reads like a different host. */
+    guint port = webkit_authentication_request_get_port(req);
+    const char *host = webkit_authentication_request_get_host(req);
+    const char *realm = webkit_authentication_request_get_realm(req);
+    char *where = (port && port != 80 && port != 443)
+        ? g_strdup_printf("%s:%u", host ? host : "", port)
+        : g_strdup(host ? host : "");
+
+    emit("auth %d %s %s",
+         webkit_authentication_request_is_retry(req) ? 1 : 0,
+         where, realm ? realm : "");
+    g_free(where);
+    return TRUE;
+}
+
+/*
+ * Answer the parked challenge, once. NULL user means "no credentials".
+ *
+ * Not webkit_authentication_request_cancel(): that cancels the page load and
+ * produces a network error, where continuing with no credentials loads the
+ * server's own 401 body -- which is what every other browser shows and says
+ * considerably more. Clearing the pointer here is what stops a second answer
+ * completing the same challenge twice.
+ */
+static void answer_auth(const char *user, const char *password)
+{
+    if (!auth_request)
+        return;
+    if (user) {
+        /* FOR_SESSION, not NONE: without it WebKit asks again for every
+           subresource in the same realm, and again on the next page of the
+           site. PERMANENT would additionally want a secret store this device
+           does not have. */
+        WebKitCredential *c = webkit_credential_new(user, password ? password : "",
+                                                    WEBKIT_CREDENTIAL_PERSISTENCE_FOR_SESSION);
+        webkit_authentication_request_authenticate(auth_request, c);
+        webkit_credential_free(c);
+    } else {
+        webkit_authentication_request_authenticate(auth_request, NULL);
+    }
+    g_clear_object(&auth_request);
 }
 
 static void on_progress(GObject *o, GParamSpec *p, gpointer d)
@@ -291,7 +560,22 @@ static void apply_surface(void)
  */
 #define N9_MAX_TOUCH 4
 static struct wpe_input_touch_event_raw touchpoints[N9_MAX_TOUCH];
-static uint32_t touch_time = 0;
+/*
+ * Event timestamps, in real milliseconds.
+ *
+ * This used to be a counter bumped by 16 per EVENT, with a comment claiming it
+ * was milliseconds. WPE's TouchGestureController measures real durations
+ * against it -- 500 ms to call a press a context menu, 200 ms to capture a
+ * gesture as a scroll -- so a press held for a full second still read as 16 ms
+ * apart and was always a click. Long press could not work at all.
+ *
+ * Truncating to 32 bits wraps after ~49 days of uptime; the controller only
+ * ever takes differences, so a wrap costs one confused gesture.
+ */
+static uint32_t now_ms(void)
+{
+    return (uint32_t) (g_get_monotonic_time() / 1000);
+}
 
 static void dispatch_touch(enum wpe_input_touch_event_type type, int slot, int x, int y)
 {
@@ -300,18 +584,16 @@ static void dispatch_touch(enum wpe_input_touch_event_type type, int slot, int x
         webkit_web_view_backend_get_wpe_backend(webkit_web_view_get_backend(view));
     if (!b) return;
 
-    /* Monotonic and in milliseconds is all the gesture controller asks of it;
-       it compares timestamps to tell a tap from a drag. */
-    touch_time += 16;
+    const uint32_t t = now_ms();
 
     touchpoints[slot].type = type;
-    touchpoints[slot].time = touch_time;
+    touchpoints[slot].time = t;
     touchpoints[slot].id = slot;
     touchpoints[slot].x = x;
     touchpoints[slot].y = y;
 
     struct wpe_input_touch_event event = {
-        touchpoints, N9_MAX_TOUCH, type, slot, touch_time, 0
+        touchpoints, N9_MAX_TOUCH, type, slot, t, 0
     };
     wpe_view_backend_dispatch_touch_event(b, &event);
 
@@ -338,6 +620,10 @@ static void on_web_process_terminated(WebKitWebView *v,
     emit("loading 0");
     /* Same reason: the field that was focused died with the process. */
     set_ime_focus(FALSE);
+    /* And so did the challenge behind any prompt still on screen. The shell
+       closes it on this event; drop our ref so nothing tries to answer a
+       request whose load no longer exists. */
+    g_clear_object(&auth_request);
 }
 
 /*
@@ -441,8 +727,11 @@ static void handle_command(const char *line)
 {
     if (!view || !line) return;
     /* Touch is per-motion-event and would drown the log; everything else is
-       rare enough to trace. */
-    if (strncmp(line, "touch ", 6))
+       rare enough to trace -- except the one line carrying a password, which
+       the shell keeps a copy of on disk. */
+    if (!strncmp(line, "authok ", 7))
+        fprintf(stderr, "[n9engine] cmd: authok <credentials>\n");
+    else if (strncmp(line, "touch ", 6))
         fprintf(stderr, "[n9engine] cmd: %s\n", line);
 
     if (!strncmp(line, "load ", 5)) {
@@ -519,6 +808,33 @@ static void handle_command(const char *line)
         /* Straight into the focused field, as a committed string. */
         if (im_context)
             g_signal_emit_by_name(im_context, "committed", line + 5);
+    } else if (!strncmp(line, "authok ", 7)) {
+        /* Base64 on both fields. The protocol is whitespace-separated with no
+           escaping and only the LAST field may contain spaces -- a password
+           routinely does, and so can a username. */
+        char **f = g_strsplit(line + 7, " ", 2);
+        if (f[0] && f[1]) {
+            gsize ul = 0, pl = 0;
+            guchar *u = g_base64_decode(f[0], &ul);
+            guchar *p = g_base64_decode(f[1], &pl);
+            /* g_base64_decode does not NUL-terminate. */
+            char *us = g_strndup((const char *) u, ul);
+            char *ps = g_strndup((const char *) p, pl);
+            answer_auth(us, ps);
+            g_free(us); g_free(ps); g_free(u); g_free(p);
+        }
+        g_strfreev(f);
+    } else if (!strncmp(line, "dlsave ", 7)) {
+        /* Download something the user chose rather than something the page
+           navigated to. Same machinery: download-started fires either way. */
+        if (session)
+            g_object_unref(webkit_network_session_download_uri(session, line + 7));
+    } else if (!strncmp(line, "dlcancel ", 9)) {
+        WebKitDownload *dl = g_hash_table_lookup(downloads, line + 9);
+        if (dl)
+            webkit_download_cancel(dl);
+    } else if (!strcmp(line, "authcancel")) {
+        answer_auth(NULL, NULL);
     } else if (!strncmp(line, "key ", 4)) {
         unsigned keysym; int pressed;
         if (sscanf(line + 4, "%u %d", &keysym, &pressed) == 2) {
@@ -527,7 +843,7 @@ static void handle_command(const char *line)
             if (b) {
                 struct wpe_input_keyboard_event e;
                 memset(&e, 0, sizeof e);
-                e.time = touch_time += 16;
+                e.time = now_ms();
                 e.key_code = keysym;      /* xkb keysym: Backspace 0xFF08 etc. */
                 e.pressed = pressed ? true : false;
                 wpe_view_backend_dispatch_keyboard_event(b, &e);
@@ -555,7 +871,7 @@ static void handle_command(const char *line)
                 e.base.type = (enum wpe_input_axis_event_type)
                     (wpe_input_axis_event_type_motion_smooth
                      | wpe_input_axis_event_type_mask_2d);
-                e.base.time = touch_time += 16;
+                e.base.time = now_ms();
                 e.base.x = x;
                 e.base.y = y;
                 e.x_axis = dx;
@@ -729,6 +1045,28 @@ int main(int argc, char *argv[])
                                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
                                NULL, NULL));
 
+    /*
+     * Process-swap-on-navigation is ON and cannot be turned off from here.
+     *
+     * It starts a fresh web process for every cross-site navigation and keeps
+     * the old ones a while. Measured on device, five loads alternating between
+     * two hosts: four live WPEWebProcess at once, free memory 101 -> 58 MB, a
+     * 40-second stall, and one navigation lost outright. Ordinary browsing
+     * hits this every few links; tab switching hits it every time.
+     *
+     * The preference is ProcessSwapOnCrossSiteNavigationEnabled, and
+     * webkit_settings_set_feature_enabled() looks like the way to reach it --
+     * it is not. The string is in the library, but the GLib feature list only
+     * exposes preferences with a WebCore binding and this one has
+     * `webcoreBinding: none, exposed: [ WebKit ]`, so it never appears in
+     * webkit_settings_get_all_features(). Verified on device: the lookup
+     * misses and the process count is unchanged. Turning it off means patching
+     * APIProcessPoolConfiguration's default in deps/build-webkit.sh and
+     * rebuilding WebKit.
+     *
+     * The process CACHE is a separate thing and is already off by itself:
+     * WebProcessCache disables itself below 3 GB of RAM.
+     */
     WebKitWebViewBackend *view_backend = webkit_web_view_backend_new(wpe_backend, NULL, NULL);
     view = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
         "backend", view_backend, "web-context", context,
@@ -743,6 +1081,11 @@ int main(int argc, char *argv[])
     g_signal_connect(view, "notify::estimated-load-progress", G_CALLBACK(on_progress), NULL);
     g_signal_connect(view, "notify::title", G_CALLBACK(on_title), NULL);
     g_signal_connect(view, "load-failed-with-tls-errors", G_CALLBACK(on_tls_error), NULL);
+    g_signal_connect(view, "authenticate", G_CALLBACK(on_authenticate), NULL);
+    g_signal_connect(view, "context-menu", G_CALLBACK(on_context_menu), NULL);
+    g_signal_connect(view, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
+    downloads = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    g_signal_connect(session, "download-started", G_CALLBACK(on_download_started), NULL);
     g_signal_connect(view, "web-process-terminated",
                      G_CALLBACK(on_web_process_terminated), NULL);
 
@@ -790,9 +1133,33 @@ int main(int argc, char *argv[])
                 (tls && g_tls_backend_supports_tls(tls)) ? "available" : "UNAVAILABLE");
     }
 
-    fprintf(stderr, "[n9engine] loading %s (memory limit %d MB)\n", url, N9_MEMORY_LIMIT_MB);
+    /*
+     * "No page yet" is a state, not a document, so do not load one.
+     *
+     * about:blank was standing in for it, which put a url in the address bar
+     * that has to be cleared before anything can be typed, and rendered a
+     * document to show nothing.
+     *
+     * It does NOT save a web process, measured: one is already running at idle
+     * with nothing loaded, because WebKit brings it up with the VIEW rather
+     * than with the first load -- `surface` and `window` are both emitted
+     * before any `loading 1`. What it saves is the document load and the first
+     * paint, and what it buys is an empty address bar.
+     *
+     * Deferring is otherwise safe: the backend takes its size from the
+     * `geometry` command whether or not a page is loading. With nothing
+     * painted, no frame arrives, so the shell keeps its own start page up --
+     * which is the intended look for an empty tab.
+     */
     emit("ready");
-    webkit_web_view_load_uri(view, url);
+    if (g_strcmp0(url, "about:blank") != 0) {
+        fprintf(stderr, "[n9engine] loading %s (memory limit %d MB)\n",
+                url, N9_MEMORY_LIMIT_MB);
+        webkit_web_view_load_uri(view, url);
+    } else {
+        fprintf(stderr, "[n9engine] no start page, waiting for a load "
+                        "(memory limit %d MB)\n", N9_MEMORY_LIMIT_MB);
+    }
 
     loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(loop);

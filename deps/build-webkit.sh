@@ -158,6 +158,132 @@ PYEOF
 
 patch_rounded_rect_limit
 
+# Process-swap-on-navigation, off.
+#
+# WebKit starts a fresh web process for every cross-site navigation and keeps
+# the old ones a while. Measured on device, five loads alternating between two
+# hosts: FOUR live WPEWebProcess at once, free memory 101 -> 58 MB, a 40-second
+# stall, and one navigation lost outright. Ordinary browsing hits it every few
+# links. See docs/process-swap.md for the full measurement and for the three
+# runtime routes that are all closed -- the GLib feature API does not expose
+# this preference, the WebKit C API is not built into the library, and no
+# environment variable reaches it. Patching the source is what is left.
+#
+# The preference itself defaults to true and is code-generated, so the cheapest
+# surgical point is where the pool reads it. Everything else follows: the web
+# process cache is already disabled below 3 GB of RAM, and automatic process
+# prewarming is gated on this same flag.
+#
+# The cost is site isolation, which is what the feature is for. On a single core
+# with ~100 MB free and JavaScript off by default, the memory is worth more.
+patch_disable_process_swap() {
+    python3 - "$SRC" <<'PYEOF'
+import sys, os
+src = sys.argv[1]
+p = os.path.join(src, "Source/WebKit/UIProcess/API/glib/WebKitWebContext.cpp")
+t = open(p).read()
+if "n9: process swap disabled" in t:
+    raise SystemExit(0)          # already patched
+
+# The WPE branch of the #if. GTK reads a property here; WPE hardcodes true.
+old = "    configuration.setProcessSwapsOnNavigation(true);"
+if old not in t:
+    raise SystemExit("process-swap patch site not found; check WebKitWebContext.cpp")
+
+new = ("    // n9: process swap disabled. A web process per cross-site navigation\n"
+       "    // does not fit in ~100 MB of free RAM -- four end up alive at once,\n"
+       "    // the device stalls for tens of seconds and loses navigations.\n"
+       "    // See docs/process-swap.md. Prewarming and the process cache are\n"
+       "    // gated on the same flag, so they go too.\n"
+       "    //\n"
+       "    // THIS is the deciding call, not the preference in WebProcessPool:\n"
+       "    // processSwapsOnNavigation() is m_processSwapsOnNavigationFromClient\n"
+       "    // .value_or(fromExperimentalFeatures), and this setter writes the\n"
+       "    // CLIENT half, which wins. Patching the experimental half instead\n"
+       "    // builds, installs and changes nothing at all.\n"
+       "    configuration.setProcessSwapsOnNavigation(false);")
+t = t.replace(old, new, 1)
+open(p, "w").write(t)
+print("==> patched process-swap-on-navigation: forced off in the WPE context")
+PYEOF
+}
+
+patch_disable_process_swap
+
+# Long press on a link, which WPE generates and then discards.
+#
+# TouchGestureController turns a press held past 500 ms into a ContextMenuEvent
+# correctly, but PageClientImpl's handler for it is an empty lambda carrying
+# "FIXME: Generate contextmenuevent without accidentally generating
+# mouseup/mousedown events". So the gesture exists, reaches the port, and dies
+# there: WebKitWebView::context-menu can never fire from touch, and no amount of
+# work in the engine or the shell can make it.
+#
+# The FIXME is about not delivering a stray left click to the page. Using the
+# RIGHT button avoids that: WebCore raises the context menu from button 2 and
+# pages do not act on it the way they act on a left click.
+patch_touch_context_menu() {
+    python3 - "$SRC" <<'PYEOF'
+import sys, os
+src = sys.argv[1]
+p = os.path.join(src, "Source/WebKit/UIProcess/API/wpe/PageClientImpl.cpp")
+t = open(p).read()
+if "n9: long press" in t:
+    raise SystemExit(0)          # already patched
+
+old = """        [&](TouchGestureController::ContextMenuEvent&) {
+            // FIXME: Generate contextmenuevent without accidentally generating mouseup/mousedown events
+        },"""
+if old not in t:
+    raise SystemExit("touch context-menu patch site not found; check PageClientImpl.cpp")
+
+new = """        [&](TouchGestureController::ContextMenuEvent& contextMenuEvent) {
+            // n9: long press. Upstream leaves this empty, so the gesture is
+            // generated and dropped and context-menu never fires from touch.
+            // The right button is what keeps the upstream FIXME honest: WebCore
+            // raises the context menu from it, and a page does not treat it as
+            // an activation the way it would a left click.
+            auto* event = &contextMenuEvent.event;
+            // Move the pointer there FIRST, as the click path above does.
+            // Without it WebCore hit-tests wherever it last thought the
+            // pointer was, so no menu is raised for the node under the finger.
+            event->type = wpe_input_pointer_event_type_motion;
+            page.handleMouseEvent(NativeWebMouseEvent(event, page.deviceScaleFactor(), WebMouseEventSyntheticClickType::NoTap));
+            event->type = wpe_input_pointer_event_type_button;
+            event->button = 2;
+            event->state = 1;
+            event->modifiers |= wpe_input_pointer_modifier_button2;
+            page.handleMouseEvent(NativeWebMouseEvent(event, page.deviceScaleFactor(), WebMouseEventSyntheticClickType::NoTap));
+            event->state = 0;
+            event->modifiers &= ~wpe_input_pointer_modifier_button2;
+            page.handleMouseEvent(NativeWebMouseEvent(event, page.deviceScaleFactor(), WebMouseEventSyntheticClickType::NoTap));
+        },"""
+t = t.replace(old, new, 1)
+open(p, "w").write(t)
+p2 = os.path.join(src, "Source/WebKit/UIProcess/wpe/WebContextMenuProxyWPE.h")
+t2 = open(p2).read()
+if "n9: let the base class" not in t2:
+    old2 = "    void showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&&) final { }\n    void show() final { };"
+    if old2 not in t2:
+        raise SystemExit("context menu proxy patch site not found; check WebContextMenuProxyWPE.h")
+    new2 = ("    // n9: let the base class run. WebContextMenuProxy::show() is what calls\n"
+            "    // getContextMenuFromProposedMenu, which is what reaches the GLib client\n"
+            "    // and emits WebKitWebView::context-menu. Overriding show() with an empty\n"
+            "    // body -- as this port did -- silently discards every context menu, so\n"
+            "    // the whole API is present and inert: the signal can never fire.\n"
+            "    //\n"
+            "    // showContextMenuWithItems stays empty on purpose. That is the step that\n"
+            "    // DRAWS a native menu, and the menu here is the platform QML one.\n"
+            "    void showContextMenuWithItems(Vector<Ref<WebContextMenuItem>>&&) final { }")
+    t2 = t2.replace(old2, new2, 1)
+    open(p2, "w").write(t2)
+    print("==> patched context menu proxy: the signal can now fire")
+print("==> patched touch long press: context menu is actually delivered")
+PYEOF
+}
+
+patch_touch_context_menu
+
 TC=$(cmake_toolchain_file)
 
 # CMAKE_<LANG>_FLAGS_INIT seeds the cache only on the FIRST configure of a build

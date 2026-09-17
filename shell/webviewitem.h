@@ -94,6 +94,10 @@ protected:
 
 private:
     void handleTouch(QTouchEvent *event);
+    void pressAt(const QPointF &itemPoint);
+    // Slide the window into the surface sideways by a drag of dxItem item
+    // pixels, so the content under the finger stays under the finger.
+    void panBy(double dxItem);
     QPointF toSurface(const QPointF &itemPoint) const;
     double vFraction(double itemY) const;
     double pageBottom() const;
@@ -117,6 +121,14 @@ private:
     int m_bottomInset;           // item px the platform toolbar covers
     bool m_haveTouch;            // real touch arrived; ignore synthesised mice
     bool m_touchDown;
+    // While magnified a one-finger drag has two possible meanings -- pan the
+    // window into the surface, or scroll the page -- so it is recognised
+    // before anything is forwarded. Unmagnified there is only ever the page,
+    // and the gesture starts in DragPage.
+    enum DragKind { DragUndecided, DragPage, DragPan };
+    DragKind m_drag;
+    QPointF m_touchStart;        // item coords of the press
+    QPointF m_panLast;           // item coords the pan last consumed
     bool m_pinching;
     double m_pinchBaseDistance;
     double m_pinchBaseZoom;

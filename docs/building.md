@@ -52,6 +52,13 @@ you do not want that.
 the build host has no swap; the OOM killer takes out `cc1plus` and the whole run
 is wasted. Symptom: `fatal error: Killed signal terminated program cc1plus`.
 
+**Do not estimate a rebuild with `ninja -n | wc -l`.** It counts output lines,
+not edges, and a command spans several. Worse, the real total shrinks as the run
+proceeds — `[1/522]` became `[3/34]` became `[6/18]` for a one-line change in
+`WebProcessPool.cpp` — because `restat` generators produce identical output and
+ninja prunes the subtree it had conservatively marked dirty. Overestimating here
+is what talks you out of a cheap fix.
+
 **Rebuild scope is bounded.** `add_definitions()` in
 `Source/WebKit/PlatformWPE.cmake` is directory-scoped, so changing
 `PKGLIBEXECDIR` dirties ~365 objects, not the whole tree. Touching only

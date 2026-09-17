@@ -11,9 +11,9 @@
 # compression".
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
-VERSION="${VERSION:-0.2.4}"
+VERSION="${VERSION:-0.3.0}"
 ARCH=armel
-DEB="$ROOT/out/arm/deb"
+DEB="$ROOT/out/arm/webmee"   # last component is the package name: gendigsigsums reads it
 OUT="$ROOT/out/WebMee_${VERSION}_${ARCH}.deb"
 
 command -v dpkg-deb >/dev/null || { echo "dpkg-deb not found" >&2; exit 1; }
@@ -75,7 +75,56 @@ exit 0
 POST
 chmod 755 "$DEB/DEBIAN/postinst"
 
+# md5sums. Every real .deb carries one, and this package had none -- only
+# control and postinst. On Harmattan it is also the most likely thing aegis
+# correlates the manifest's <for path> entries against: without it the install
+# says
+#     <for> refers to '/opt/n9browser/bin/WebMee', not installed by that
+#     package -- ignored
+# and the manifest grants nothing. (Unconfirmed as the cause -- aegis-deb-add
+# only appends to the ar archive and validates nothing, so this could not be
+# checked off-device. Shipping it is correct packaging either way.)
+( cd "$DEB" && find . -path ./DEBIAN -prune -o -type f -print0 \
+    | xargs -0 md5sum | sed 's|  \./|  |' > DEBIAN/md5sums )
+
+# digsigsums: the aegis per-file hash list. Without it the install says
+#     file /var/lib/dpkg/tmp.ci/digsigsums cannot be opened
+#     No digsigsums file
+# and, because aegis correlates the manifest against it, also
+#     <for> refers to '/opt/n9browser/bin/WebMee', not installed by that package
+# Madde's own dpkg-deb wrapper generates this; we call the host dpkg-deb, so we
+# have to run the same tool ourselves. It refuses to overwrite, hence the rm.
+GENSUMS="$HOME/QtSDK/Madde/madbin/gendigsigsums"
+if [ -x "$GENSUMS" ]; then
+    rm -f "$DEB/DEBIAN/digsigsums"
+    "$GENSUMS" -o com.nokia.maemo "$DEB/DEBIAN/digsigsums" "$DEB" \
+        && echo "     digsigsums generated ($(grep -c "" "$DEB/DEBIAN/digsigsums") files)" \
+        || echo "     WARNING: gendigsigsums failed; aegis will ignore the manifest" >&2
+else
+    echo "     WARNING: no gendigsigsums at $GENSUMS" >&2
+fi
+
 echo "==> packing"
 rm -f "$OUT"
 fakeroot dpkg-deb -Zgzip --build "$DEB" "$OUT" >/dev/null
+
+# The aegis manifest ships as a TOP-LEVEL ar member named _aegis, not as a file
+# inside control.tar.gz -- which is why `dpkg-deb -I` does not list it and
+# `ar t` does. `mad dpkg-buildpackage` would attach it by itself; this build
+# does not go through debhelper, so attach it directly with the same tool.
+AEGIS="$ROOT/debian/webmee.aegis"
+ADD="$HOME/QtSDK/Madde/madbin/aegis-deb-add"
+# Validate before attaching. aegis parses the manifest at INSTALL time on the
+# device, and rejects the whole package when it fails -- so a malformed one is
+# only discovered after a 50 MB transfer. Its diagnostics are misleading too: a
+# double hyphen inside an XML comment is illegal XML, and aegis reports that as
+# "Manifest cannot have <! ..> elements", which reads like a ban on comments.
+if [ -f "$AEGIS" ]; then
+    python3 -c "import sys,xml.etree.ElementTree as E; E.parse(sys.argv[1])" "$AEGIS"         || { echo "aegis manifest is not well-formed XML; refusing to package" >&2; exit 1; }
+fi
+if [ -f "$AEGIS" ] && [ -x "$ADD" ]; then
+    "$ADD" "$OUT" "$AEGIS=_aegis" && echo "     aegis manifest attached"
+else
+    echo "     WARNING: no aegis manifest attached (missing $AEGIS or $ADD)" >&2
+fi
 echo "built: $OUT ($(du -h "$OUT" | cut -f1), installs $((SIZE/1024)) MB)"

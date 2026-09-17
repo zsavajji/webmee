@@ -1,0 +1,55 @@
+<!-- Aegis security manifest. Harmattan's mandatory access control: a binary
+     that touches a protected resource without a grant fails silently at
+     runtime, with no dialog and no log entry. -->
+
+<!-- XML comments are allowed here, but a double hyphen inside one is illegal
+     XML and aegis reports it as "Manifest cannot have <! ..> elements", which
+     reads like a ban on comments. package.sh refuses to build unless this file
+     parses, because aegis only checks it at install time on the device. -->
+
+<!-- NOT VERIFIABLE on the development phone. `accli -I` there reports
+     "Current mode: open", and open mode grants no credentials and enforces
+     nothing, so the app behaves identically with this file, without it, or
+     with it wrong. The first install on a closed device is the only test. -->
+
+<!-- What is requested:
+
+     UID::user, GID::users: run as the normal user, which is all WebMee needs
+     for its own IPC. The shell talks to the engine over QProcess pipes, and
+     WebKit talks to its own web and network processes over socketpairs it
+     creates itself; those are same-uid children of the app, which aegis does
+     not gate.
+
+     What is deliberately NOT requested:
+
+     The applauncherd-launcher booster grant. That entry propagates CAPABILITY
+     credentials to the launcher so a boosted app does not lose them. WebMee
+     asks for no capabilities, so it had nothing to carry, and aegis answered
+     on install with "request 'UID::user' for 'applauncherd-launcher::...'
+     ignored, matched by deny rule": identity tokens cannot be propagated that
+     way. Add the entry when there is a real capability to carry, not before.
+
+     A signond credential, for the credential store behind the HTTP
+     authentication prompt (shell/passwordstore.cpp). It is the one system
+     service this app calls, over the session bus. The token definitions under
+     /usr/share/aegis-manifest-dev/api are not installed on the build host or
+     the phone, so `aegis-manifest` cannot generate one, and a guessed token
+     name fails the install outright. If saved passwords do not work on a
+     closed device, this is the first thing to look at.
+
+     Regenerate with `aegis-manifest` against the built binaries rather than
+     extending this by hand, and add only what it reports missing. -->
+
+<aegis>
+	<request policy="add">
+		<credential name="UID::user" />
+		<credential name="GID::users" />
+		<for path="/opt/n9browser/bin/WebMee" />
+	</request>
+
+	<request policy="add">
+		<credential name="UID::user" />
+		<credential name="GID::users" />
+		<for path="/opt/n9browser/bin/webmee-engine" />
+	</request>
+</aegis>

@@ -112,6 +112,13 @@ public slots:
     void reload();
     void stop();
     void share();
+    // Share a specific url rather than the current page, for the long-press
+    // menu. Goes through the platform share sheet (com.nokia.ShareUi).
+    void shareLink(const QString &url);
+    // Put text on the system clipboard. The shell does this, not the engine:
+    // Qt already has the clipboard and the engine would need the backend's
+    // pasteboard interface to reach the same place.
+    Q_INVOKABLE void copyToClipboard(const QString &text);
 
     void clearCache();
     void clearCookies();
@@ -136,6 +143,18 @@ public slots:
     void setSurfaceScale(double magnification);
     // Text typed on the on-screen keyboard, committed into the focused field.
     void sendText(const QString &text);
+
+    // Answer the pending HTTP authentication challenge. Exactly one of these
+    // must follow every authenticationRequested(): until one arrives the
+    // engine is holding the request and the page is not loading.
+    void authenticate(const QString &user, const QString &password);
+    void cancelAuthentication();
+    // Where downloads land. Set from main.cpp so the shell and the engine use
+    // one constant rather than hardcoding the same path twice.
+    void setDownloadDir(const QString &dir) { m_downloadDir = dir; }
+    void cancelDownload(const QString &url);
+    // Download a url the user picked, rather than one a page navigated to.
+    void saveLink(const QString &url);
     // An editing key, as an xkb keysym (Backspace 0xFF08, Return 0xFF0D...).
     void sendKey(int keysym, bool pressed);
     // Device pixels rasterised per CSS pixel. 1.0 is fast and soft, 1.5 matches
@@ -181,6 +200,23 @@ signals:
     void scrollChanged();
     // The page focused or blurred an editable: show or hide the keyboard.
     void inputFocusChanged(bool focused);
+    // A server asked for HTTP credentials. `where` is the host, with the port
+    // appended only when it is not the scheme's own; `realm` is whatever the
+    // server called the protected area, and may be empty. `retry` means the
+    // last attempt was rejected.
+    void authenticationRequested(const QString &where, const QString &realm, bool retry);
+    // A link was long-pressed. The shell opens its own menu; WPE has no menu
+    // UI of its own, so the engine only reports what was under the finger.
+    void linkLongPressed(const QString &url);
+    void imageLongPressed(const QString &url);
+    // Downloads. The engine runs them -- Qt 4.7.4 cannot complete a TLS
+    // handshake with a modern server, so the shell could not fetch https at
+    // all. It picks the destination too, because WebKit needs one before any
+    // data arrives. These map straight onto DownloadManager's slots.
+    void downloadStarted(const QString &url, const QString &path, qint64 total);
+    void downloadProgress(const QString &url, qint64 received, qint64 total);
+    void downloadFinished(const QString &url);
+    void downloadFailed(const QString &url, const QString &error);
     void caretChanged();
     // The engine is now rendering a surface of this size, in device pixels.
     void surfaceResized(const QSize &size);
@@ -228,6 +264,7 @@ private:
     int m_pageCacheEntries;
 
     QString m_dataPath;
+    QString m_downloadDir;
     double m_zoom;
     double m_renderScale;
     int m_layoutWidth;

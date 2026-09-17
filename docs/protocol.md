@@ -25,6 +25,10 @@ next read (`BrowserEngine::onEngineOutput`).
 | `text <utf8>` | Typed text, committed into the focused field. Never contains a newline: the shell splits on them and sends `key 65293` around the pieces, so Enter reaches the page as a key press and can submit a form. |
 | `key <keysym> <0\|1>` | An editing key as an xkb keysym (Backspace `65288`, Return `65293`, arrows `65361`–`65364`). |
 | `scrollby <dx> <dy>` | Scroll the page, in CSS pixels. Used to lift the caret clear of the keyboard. |
+| `authok <b64user> <b64pass>` | Answer the pending HTTP authentication challenge. Both fields are base64: a password routinely contains a space, which this protocol cannot carry anywhere but the last field. |
+| `authcancel` | Answer it with no credentials. The page then loads the server's 401 body. |
+| `dlsave <uri>` | Download a url the user picked (the image menu's Save), rather than one a page navigated to. |
+| `dlcancel <uri>` | Stop a running download. Keyed by uri, which is what the shell's model is keyed by. |
 | `axis <x> <y> <dx> <dy>` | A wheel event. **Unproven** — see the note below. |
 | `clearcache` / `clearcookies` | Ask WebKit to clear its own storage. |
 | `quit` | Exit the main loop. |
@@ -44,6 +48,12 @@ next read (`BrowserEngine::onEngineOutput`).
 | `scroll <y>` | Scroll position in CSS pixels. Drives the URL bar's hide-on-scroll. Reported by an injected user script through a script message handler — event-driven, throttled to 8 px in the page, `capture: true` so nested scrollers report too. |
 | `ime <0\|1>` | Whether an editable is focused — a **state**, not an edge, and the only signal the on-screen keyboard has. Repeats are suppressed. Reported on focus in/out, and also whenever the focused field is destroyed rather than blurred: at `WEBKIT_LOAD_COMMITTED` and on web-process termination. |
 | `imerect <x> <y> <w> <h>` | Caret rectangle in CSS pixels, for keeping the keyboard off it. |
+| `link <uri>` | A link was long-pressed. The shell draws its own menu; WPE has no menu UI. |
+| `image <uri>` | An image was long-pressed. A *linked* image reports `link` instead — the link wins, as in the stock browser. |
+| `dlstart <total> <b64path> <uri>` | A download began. The engine picked the path: it has the server's suggested name and must give WebKit a destination before data arrives. |
+| `dlprogress <received> <total> <uri>` | Throttled to one line per 64 KiB. `received-data` fires per chunk, and this pipe also carries frames. |
+| `dlfinish <b64path> <uri>` / `dlfail <b64error> <uri>` | Terminal. A cancel arrives as `dlfail`. |
+| `auth <retry> <host[:port]> <realm>` | A server asked for HTTP credentials. The port is appended only when it is not the scheme's own. `realm` is the server's own name for the protected area, is last because it is free text, and may be empty. `retry` means the previous answer was rejected. The engine is holding the request and the page is not loading until `authok` or `authcancel` arrives. |
 
 ## Text input
 
@@ -88,6 +98,183 @@ The engine therefore reports it itself, from `WEBKIT_LOAD_COMMITTED` rather than
 focus-out for a field that is in fact still focused is the worse failure: WebKit
 does not emit focus-in again for a field that never lost focus, so the keyboard
 would never come back.
+
+## Tabs are addresses, not running pages
+
+The engine knows nothing about tabs. There is one web view and there can only be
+one — `WPEWebProcess` peaks at 116–127 MB against the ~150 MB free — so the
+shell keeps a list of addresses and switching is a plain `load`. All tabs share
+one back/forward history, and switching re-fetches.
+
+### What was broken, and what was tried
+
+Three silent failures, all in the shell:
+
+- **Nothing ever wrote `tabUrl` back.** A row kept the url it was created with,
+  so switching to a tab loaded that — `about:blank` for the first one, which is
+  what "the tab lost its context" was. This was the whole bug. The engine is the
+  only thing that knows where a page actually went (a redirect, a link, a form
+  post), so the row now follows `url`/`title` events rather than the address bar.
+- **`tabTitle` was set to the url at creation and never updated.**
+- **The thumbnails were an `Image` on `image://tab/<index>`, and no such
+  provider was ever registered.** An unknown provider renders nothing and warns
+  about nothing, so the cards just looked empty. There is no cheap real one —
+  the page is a GL texture in the engine's X window, so a thumbnail means
+  `glReadPixels` off an SGX tiler plus a held QImage per tab. The cards carry
+  the title and the address instead.
+
+**Per-tab history via `WebKitWebViewSessionState` was built and reverted.** The
+idea was sound — park the outgoing tab's state, restore the incoming one, and
+each tab keeps its own back/forward list and scroll position with only one view
+live. It does not work. `webkit_web_view_restore_session_state()` is for a view
+that has not loaded yet; repeatedly re-pointing one live view that already has a
+running web process fights the engine. Measured on device: a new web process and
+a new X window per switch, a tab coming back showing *another tab's* page, and
+`Error sending IPC message: Bad file descriptor`. WebKit's own comment calls
+separating restore from navigation a FIXME, which is the warning that was there
+to read.
+
+If per-tab history is wanted, the honest shape is a second view, and that does
+not fit in the memory budget — see [process-swap.md](process-swap.md), which is
+about the same budget being blown by something else.
+
+## Long press, and four things WPE does not do
+
+Long press on a link or an image is a menu the shell draws. Getting the gesture
+to arrive at all needed three WebKit patches (`deps/build-webkit.sh`) and one
+fix here, each hiding the next:
+
+1. **Our own clock was a counter.** `dispatch_touch` advanced `touch_time += 16`
+   per EVENT while the comment claimed milliseconds. `TouchGestureController`
+   measures real durations against it — 500 ms for a long press, 200 ms for
+   scroll capture — so a press held a full second read as 16 ms and was always
+   a click. Use `g_get_monotonic_time()`.
+2. **WPE generates the gesture and discards it.** `PageClientImpl`'s handler for
+   `ContextMenuEvent` is an empty lambda carrying *"FIXME: Generate
+   contextmenuevent without accidentally generating mouseup/mousedown events"*.
+   Patched to synthesise a **right**-button press, which is what keeps that
+   FIXME honest: WebCore raises the menu from button 2 and a page does not treat
+   it as an activation.
+3. **...with a pointer motion first.** Upstream's click path moves the pointer
+   before pressing; without it WebCore hit-tests wherever it last thought the
+   pointer was, and raises no menu for the node under the finger.
+4. **The proxy throws the menu away.** `WebContextMenuProxyWPE` overrides
+   `show()` with `{ }` — and the BASE `WebContextMenuProxy::show()` is what calls
+   `getContextMenuFromProposedMenu`, which reaches the GLib client and emits the
+   signal. Removing the override is the fix. `showContextMenuWithItems` stays
+   empty on purpose: that is the step that draws a *native* menu, and ours is
+   QML.
+
+So **WPE 2.44 ships the entire context-menu API inert** — the signal,
+`WebKitContextMenu`, `WebKitHitTestResult`, `ENABLE_CONTEXT_MENUS=1`, all
+present, and no touch long press can ever reach any of it.
+
+**The handler takes TWO arguments, not three.** The GTK port and WPE's pre-2022
+API pass a GdkEvent in the middle, and `WebKitWebViewWPE1.cpp` declares the
+signal that way — but this is the 2022 GLib API, so `WebKitWebViewWPE2.cpp` is
+what compiles and the event parameter is omitted from both the signal and the
+emit. Declaring the extra parameter shifts everything along, and the hit test
+lands in the `user_data` slot: the handler sees a plausible NULL rather than
+crashing.
+
+Verified on device: short tap navigates; long press reports `link` and does not
+navigate; a bare image reports `image`; a linked image reports `link`.
+
+## Downloads
+
+Nothing downloaded before this. There was no `decide-policy` handler, so a link
+to a file WebKit cannot display was silently dropped, and the shell's
+`DownloadManager` was a model driven by a fake timer that nothing ever called.
+
+It has to be the engine: Qt 4.7.4's `QSslSocket` cannot complete a handshake
+with a modern server, so anything the shell fetched over https would fail.
+
+- `decide-policy` turns an undisplayable response into a download.
+- `download-started` on the network session wires up `decide-destination`,
+  `received-data`, `finished`, `failed`.
+- The engine picks the destination — fixed at `/home/user/MyDocs/Downloads`,
+  collisions disambiguated `file-1.zip`. One constant, passed shell → engine as
+  `N9_DOWNLOAD_DIR` rather than hardcoded on both sides.
+- Cancel stops the transfer *before* the partial file is removed. Deleting a
+  file the engine is still writing only gets it recreated.
+
+Measured on device with a 14 MB jpeg: 14,679,474 bytes, byte-exact against the
+server's `Content-Length`, valid JPEG start and end markers, 221 progress lines
+(one per 64 KiB). The saved name is `Fronalpstock_big.jpg` — WebKit's suggested
+filename drops the query string, so a url ending `?utm_source=...` does not
+become part of it.
+
+Images land in `Downloads`, so the Gallery will not show them until something
+tells Tracker about them.
+
+## HTTP authentication
+
+The WPE port's default `authenticate` handler is `return FALSE`
+(`WebKitWebViewWPE.cpp`). There is no built-in dialog and nothing else in the
+port supplies one, so an unhandled challenge is answered with no credentials
+and the site's 401 loads. That is what a password-protected site looked like
+here: not an error, a page saying Unauthorized.
+
+The engine keeps a ref to the request and returns TRUE, which is WebKit's
+documented way to handle the signal asynchronously, then waits for exactly one
+answer. **Every path out of the shell's prompt must send one** — until it does,
+that load is parked.
+
+Only the schemes a username and a password can answer are claimed (default,
+basic, digest, NTLM, negotiate). Client-certificate and PIN challenges are left
+to propagate; returning TRUE for those would park a request the prompt has no
+way to satisfy.
+
+Credentials are supplied with `WEBKIT_CREDENTIAL_PERSISTENCE_FOR_SESSION`.
+Without that, WebKit asks again for every protected subresource on the page and
+again on the next page of the site: the network process only consults its
+credential store for `ForSession` and `Permanent` entries
+(`NetworkDataTaskSoup.cpp`). `Permanent` additionally wants a secret store this
+device does not have, and nothing reports its absence.
+
+Cancelling sends `authcancel`, which answers with **no credentials** rather than
+calling `webkit_authentication_request_cancel()`. Cancelling the request cancels
+the page load and produces a network error; answering with nothing loads the
+server's own 401 body, which is what other browsers show and says considerably
+more.
+
+`authok` is the one command the engine does not trace to stderr — the shell
+keeps a copy of that log on disk.
+
+### Remembering them
+
+The shell's `PasswordStore` (signond) backs the prompt, so credentials survive a
+restart where WebKit's `ForSession` storage does not. The flow:
+
+- A challenge that is **not** a retry, for a host the index knows, is looked up
+  and answered **without the prompt ever opening**. Only the index lookup is
+  synchronous; signond is D-Bus, so the prompt is held back until it answers and
+  a 4 s timer falls through to prompting if it never does.
+- A **retry** forgets the stored credential first, whoever supplied it — it was
+  just rejected. Without that, every later visit would auto-fill the same wrong
+  password and prompt one round trip later. Forgetting makes the store
+  self-correcting, which is what allows saving on accept rather than waiting to
+  learn the password was right.
+- The reply carries the store's **normalised host key**, not what the server
+  said, and it is checked against the pending challenge before being used. The
+  engine answers an outstanding challenge with nothing when a second one
+  arrives, so a lookup can land after its challenge is gone — and answering the
+  new one with the old one's password would hand a site someone else's
+  credentials.
+
+Settings → Storage counts them and forgets them all; a store that can only be
+added to is not one to put a password in.
+
+### The prompt is a modal over an item that still receives touch
+
+A popup does not stop touches reaching the page. Only `WebViewItem` sets
+`acceptTouchEvents`, so QGraphicsScene delivers a touch down through every
+plain QML item above it — the same fall-through the URL bar needed `inPage()`
+for, except a dialog sits in the middle of the screen where `inPage()` cannot
+help. Tapping a field in the prompt would also tap whatever the page has under
+it. `BrowserPage` therefore disables the web view item while any popup is up; a
+disabled `QGraphicsItem` receives no events, and `enabled` does not affect
+painting, so the page keeps rendering behind the dialog.
 
 ## Scrolling inside a page element does not work yet
 

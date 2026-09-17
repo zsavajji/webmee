@@ -14,7 +14,6 @@
 #include <QAbstractListModel>
 #include <QList>
 #include <QString>
-#include <QTimer>
 
 class DownloadManager : public QAbstractListModel
 {
@@ -48,7 +47,10 @@ public:
 
 public slots:
     // Called by the engine when it decides a response is a download.
-    void start(const QString &url, const QString &suggestedName, qint64 totalBytes);
+    // `path` is the destination the ENGINE chose and is already writing to --
+    // it picks the name because it is the side that has the server's suggestion
+    // and has to hand WebKit a destination before any data arrives.
+    void start(const QString &url, const QString &path, qint64 totalBytes);
     void cancel(int row);
     void removeEntry(int row);
     void openFile(int row);
@@ -65,9 +67,10 @@ signals:
     void downloadStarted(const QString &name);
     void downloadFinished(const QString &name, const QString &path);
     void downloadFailed(const QString &name, const QString &error);
+    // Cancelling is the engine's to do; the row only asks.
+    void cancelRequested(const QString &url);
 
 private slots:
-    void tick();                 // stub only: drives simulated transfers
 
 private:
     struct Item {
@@ -82,12 +85,10 @@ private:
 
     int indexOfUrl(const QString &url) const;
     void touched(int row);
-    QString uniquePath(const QString &suggestedName) const;
     static QString humanSize(qint64 bytes);
 
     QList<Item> m_items;
     QString m_dir;
-    QTimer m_timer;              // stub only
 };
 
 #endif

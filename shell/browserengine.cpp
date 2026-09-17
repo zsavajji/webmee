@@ -7,6 +7,10 @@
 #include <QSettings>
 #include <QDebug>
 #include <QX11Info>
+#include <QApplication>
+#include <QClipboard>
+#include <MDataUri>
+#include <maemo-meegotouch-interfaces/shareuiinterface.h>
 #include <X11/Xlib.h>
 #include <stdio.h>
 
@@ -36,6 +40,13 @@ static QString settingsDir()
 static QString settingsFile()
 {
     return settingsDir() + "/settings.conf";
+}
+
+// Paths and error strings are base64 on the wire: both are free text that can
+// contain a space, and only the last field of a message may.
+static QString fromB64(const QString &s)
+{
+    return QString::fromUtf8(QByteArray::fromBase64(s.toLatin1()));
 }
 
 static void persist(const char *key, const QVariant &value)
@@ -165,6 +176,8 @@ void BrowserEngine::startEngine()
     env << QString("N9_NO_IMAGES=%1").arg(m_images ? 0 : 1);
     env << QString("N9_CACHE_DIR=%1").arg(m_diskCachePath);
     env << QString("N9_DATA_DIR=%1").arg(m_dataPath);
+    if (!m_downloadDir.isEmpty())
+        env << QString("N9_DOWNLOAD_DIR=%1").arg(m_downloadDir);
     // Prepend any inherited path rather than replacing it: since libwpe
     // resolves the backend by soname, this is the only way to test a freshly
     // built one against the installed tree without root.
@@ -289,6 +302,33 @@ void BrowserEngine::handleEvent(const QString &line)
             m_caretH = f.at(3).toInt();
             emit caretChanged();
         }
+    } else if (verb == "auth") {
+        // <retry> <host[:port]> <realm...> -- the realm is last because it is
+        // free text from the server and may contain spaces.
+        emit authenticationRequested(arg.section(' ', 1, 1),
+                                     arg.section(' ', 2),
+                                     arg.section(' ', 0, 0).toInt() != 0);
+    } else if (verb == "dlstart") {
+        // <total> <b64path> <uri>
+        emit downloadStarted(arg.section(' ', 2),
+                             fromB64(arg.section(' ', 1, 1)),
+                             arg.section(' ', 0, 0).toLongLong());
+    } else if (verb == "dlprogress") {
+        emit downloadProgress(arg.section(' ', 2),
+                              arg.section(' ', 0, 0).toLongLong(),
+                              arg.section(' ', 1, 1).toLongLong());
+    } else if (verb == "dlfinish") {
+        emit downloadFinished(arg.section(' ', 1));
+    } else if (verb == "dlfail") {
+        emit downloadFailed(arg.section(' ', 1), fromB64(arg.section(' ', 0, 0)));
+    } else if (verb == "image") {
+        if (!arg.isEmpty())
+            emit imageLongPressed(arg);
+    } else if (verb == "link") {
+        // The uri is the rest of the line. A url cannot contain a space, but it
+        // is last anyway so an encoded one would survive.
+        if (!arg.isEmpty())
+            emit linkLongPressed(arg);
     } else if (verb == "ime") {
         emit inputFocusChanged(arg.toInt() != 0);
     } else if (verb == "scroll") {
@@ -437,9 +477,46 @@ void BrowserEngine::stop()      { send("stop"); }
 
 void BrowserEngine::share()
 {
-    // Real implementation goes through com.nokia.ShareUi with an MDataUri, the
-    // way MeeTube's shareui.cpp does it.
-    qDebug() << "share:" << m_url;
+    shareLink(m_url);
+}
+
+void BrowserEngine::shareLink(const QString &url)
+{
+    if (url.isEmpty() || url == "about:blank")
+        return;
+    // The platform share sheet takes a data URI, not a bare string: the mime
+    // type is what lets it offer the right targets, and the title is what they
+    // show. A bare url would share as plain text.
+    MDataUri duri;
+    duri.setMimeType("text/url");
+    duri.setTextData(url);
+    if (!m_title.isEmpty() && url == m_url)
+        duri.setAttribute("title", m_title);
+    duri.setAttribute("source", url);
+
+    ShareUiInterface shareIf("com.nokia.ShareUi");
+    if (!duri.isValid() || !shareIf.isValid()) {
+        qWarning() << "BrowserEngine: share unavailable for" << url;
+        return;
+    }
+    shareIf.share(QStringList() << duri.toString());
+}
+
+void BrowserEngine::saveLink(const QString &url)
+{
+    if (!url.isEmpty())
+        send("dlsave " + url);
+}
+
+void BrowserEngine::cancelDownload(const QString &url)
+{
+    send("dlcancel " + url);
+}
+
+void BrowserEngine::copyToClipboard(const QString &text)
+{
+    if (!text.isEmpty())
+        QApplication::clipboard()->setText(text);
 }
 
 void BrowserEngine::setViewportSize(const QSize &size)
@@ -507,6 +584,21 @@ void BrowserEngine::sendText(const QString &text)
         if (!lines.at(i).isEmpty())
             send("text " + lines.at(i));
     }
+}
+
+void BrowserEngine::authenticate(const QString &user, const QString &password)
+{
+    // Base64 both halves: the protocol splits on spaces and only the last
+    // field may contain them, and a password is exactly the kind of string
+    // that has a space, a newline or a non-ASCII character in it.
+    send(QString("authok %1 %2")
+         .arg(QString::fromLatin1(user.toUtf8().toBase64().constData()))
+         .arg(QString::fromLatin1(password.toUtf8().toBase64().constData())));
+}
+
+void BrowserEngine::cancelAuthentication()
+{
+    send("authcancel");
 }
 
 void BrowserEngine::sendKey(int keysym, bool pressed)

@@ -186,6 +186,34 @@ Touch coordinates map through that window into surface device pixels; WebKit
 divides by the scale factor to get CSS pixels. So taps land correctly at any
 magnification and pan offset, and the engine needs to know nothing about either.
 
+### Panning is the shell's job, and only the shell's
+
+Because magnification does not change the CSS viewport — the whole point, since
+nothing reflows — a magnified page is exactly as wide as the window and **WebKit
+has nothing to scroll horizontally**. The extra pixels are in the surface, and
+`m_viewOrigin.x` is the only thing that chooses which slice of it is on screen.
+Forwarding the drag to the engine therefore does nothing at all: at 3x, two
+thirds of every page was unreachable, which defeats magnifying in the first
+place.
+
+So while magnified a one-finger drag is **recognised before it is forwarded**:
+sideways pans the window, up and down still scrolls the page. Sideways is the
+free axis — nothing else competes for it — while vertical panning would mean
+dragging through the whole magnified viewport before the page moved at all.
+
+The press is **held back** until the gesture is classified, and a pan never
+sends one. WPE's `TouchGestureController` makes a press a click on release
+unless the touch has moved `pixelsPerLineStep` or been down for 200 ms
+(`TouchGestureController.cpp`), and a pan moves the surface point under the
+finger by exactly nothing — that is what keeps the content under the finger. A
+forwarded press would make every quick sideways pan click whatever it started
+on. When the gesture turns out to be a page drag the press is replayed from
+where the finger actually landed, so WebKit measures its scroll from the same
+origin the finger did.
+
+The window is short vertically too, so the last screenful of a document cannot
+be brought into view at high magnification. Pinching out recovers it.
+
 ## The chrome takes space from the drawing, not from the viewport
 
 Both halves hide together on scroll down and return on scroll up, as the stock
@@ -394,8 +422,18 @@ index rather than emptying it.
 
 ## Known gaps
 
-- No tab implementation behind the tabs UI (single view).
-- Password UI (offer-to-save, fill-on-navigate) is not wired; the store works.
+- Tabs are addresses, not running pages: switching re-loads, and all tabs share
+  one back/forward history. A second live page does not fit in the memory
+  budget. The switcher shows titles and addresses; there are no thumbnails.
+  Parking each tab's `WebKitWebViewSessionState` was tried and reverted — see
+  [protocol.md](protocol.md).
+- **The browser stalls for tens of seconds every few cross-site navigations, and
+  can lose one entirely.** A web process per navigation, four alive at once
+  against ~100 MB free. Measured, diagnosed, and not fixed: every runtime knob
+  is closed and the remaining fix is a WebKit patch. See
+  [process-swap.md](process-swap.md).
+- Password UI for HTML FORM logins (offer-to-save, fill-on-navigate) is not
+  wired. HTTP authentication does use the store -- see [protocol.md](protocol.md).
 - No AIA fetching, so a server that omits an intermediate certificate fails
   where desktop browsers recover.
 - Downloads are modelled but not driven by the engine.

@@ -9,6 +9,21 @@ Page {
     property int margin: 16
     function navigate(url) { engine.load(url) }
 
+    // End an address-bar editing session.
+    //
+    // `urlField.focus = false` is the obvious way and does NOT work: the
+    // platform TextField keeps activeFocus, and the suggestion list is bound to
+    // exactly that, so it stayed open over the page that had just loaded. QML
+    // focus has to GO somewhere -- handing it to the bar itself is enough. It
+    // is a plain Item, it wants nothing, and it opens no input panel.
+    function endUrlEditing() {
+        urlBar.forceActiveFocus();
+        // A method of the TextField, not a global: calling it bare from another
+        // object's function throws a ReferenceError, which silently abandons
+        // the rest of the handler.
+        urlField.platformCloseSoftwareInputPanel();
+    }
+
     // Both halves of the chrome hide together. main.qml drives the platform
     // toolbar off this; the URL bar is ours.
     property alias chromeHidden: urlBar.hidden
@@ -18,6 +33,16 @@ Page {
     // does. The web view adds it straight back as a negative bottom margin, so
     // its own height never changes and the surface is never resized.
     property real toolBarHeight: (pageStack && pageStack.toolBar) ? pageStack.toolBar.height : 0
+
+    // Something is covering the page and expecting the taps. See the comment on
+    // webViewArea.enabled for why this has to be said explicitly -- the menu
+    // and the tab sheet have always had the same hole, they just happen to sit
+    // over parts of the page where hitting a link is less likely.
+    property bool modalUp: authDialog.status !== DialogStatus.Closed
+                           || mainMenu.status !== DialogStatus.Closed
+                           || linkMenu.status !== DialogStatus.Closed
+                           || imageMenu.status !== DialogStatus.Closed
+                           || tabsSheet.status !== DialogStatus.Closed
 
     // How much the platform has taken off the window for the on-screen keyboard.
     // Window.qml shrinks windowContent by exactly this and everything inside it
@@ -85,7 +110,6 @@ Page {
         interval: 400
         onTriggered: page.ensureCaretVisible()
     }
-    function showTab(index) { appWindow.currentTab = index; engine.load(tabModel.get(index).tabUrl) }
     // ---- URL bar ----------------------------------------------------------
     // The stock browser slides this away as you scroll down and brings it back
     // on scroll up. Driven off engine.scrollY once the engine reports it; until
@@ -110,10 +134,8 @@ Page {
             // ones that never touched it -- a link tap or a form submit moves no
             // focus by itself, so the field kept it and the suggestions stayed
             // up over the page that was loading.
-            onLoadingChanged: if (engine.loading && urlField.activeFocus) {
-                urlField.focus = false;
-                urlField.platformCloseSoftwareInputPanel();
-            }
+            onLoadingChanged: if (engine.loading && urlField.activeFocus)
+                page.endUrlEditing()
             onScrollChanged: {
                 var y = engine.scrollY;
                 if (y < 24 || urlField.activeFocus)
@@ -138,8 +160,11 @@ Page {
             }
             inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
             placeholderText: qsTr("Search or enter address")
-            // Show the live URL unless the user is editing it.
-            text: engine.url
+            // Show the live URL unless the user is editing it. about:blank is
+            // how a blank tab is spelt internally, not an address anyone typed
+            // -- showing it just means clearing it before you can type, so it
+            // reads as empty and the placeholder does the talking.
+            text: engine.url === "about:blank" ? "" : engine.url
             onActiveFocusChanged: if (activeFocus) {
                 selectAllTimer.restart();
                 suggestions.refresh();
@@ -324,18 +349,13 @@ Page {
             matches = history.suggest(urlField.text, 5);
         }
         function go(url) {
-            urlField.focus = false;
-            // A method of the TextField, not a global: calling it bare from
-            // here threw a ReferenceError and silently abandoned the rest of
-            // the function, so nothing navigated.
-            urlField.platformCloseSoftwareInputPanel();
+            page.endUrlEditing();
             engine.load(url);
         }
         // Enter follows the same rule the list shows, so what you see is what
         // you get rather than two different guesses.
         function accept(text) {
-            urlField.focus = false;
-            urlField.platformCloseSoftwareInputPanel();
+            page.endUrlEditing();
             page.navigate(text);
         }
 
@@ -430,6 +450,15 @@ Page {
         // frame.
         topInset: urlBar.y + urlBar.height
         bottomInset: page.toolBarHeight
+        // A popup over the page does NOT stop touches reaching it. Only this
+        // item sets acceptTouchEvents, so QGraphicsScene delivers a touch
+        // through every plain QML item above it -- the same fall-through the
+        // URL bar needed inPage() for, except a dialog is in the middle of the
+        // screen where inPage() cannot help. Tapping a field in the prompt
+        // would otherwise also tap whatever the page has underneath it. A
+        // disabled item receives no events at all, and enabled has no effect
+        // on painting, so the page keeps rendering behind the dialog.
+        enabled: !page.modalUp
         // z: -1 puts this UNDER the parent's own painting. Children default to
         // drawing above their parent, which would hide the page entirely.
         Rectangle {
@@ -528,12 +557,308 @@ Page {
         timerShowTime: 1500
     }
 
+    // ---- HTTP authentication ----------------------------------------------
+    // The engine parks the challenge and loads nothing until it gets exactly
+    // one answer, so every way out of this dialog has to send one. accepted
+    // and rejected cover all of them: the two buttons, and the tap-outside
+    // dismissal the platform's Dialog wires to reject().
+    Dialog {
+        id: authDialog
+        objectName: "authDialog"        // findChild handle, as webViewArea has
+        property string where: ""
+        property string realm: ""
+        property bool retry: false
+
+        // A saved credential is being fetched for `where`, and the prompt is
+        // held back until that answers -- a remembered site should not flash a
+        // dialog on its way to loading.
+        property bool awaiting: false
+
+        // Every challenge arrives here. A saved password answers it without the
+        // prompt ever opening; everything else falls through to ask().
+        // What was last submitted for `where`, so a retry can start from it.
+        // Not the text left in the field: an unrelated prompt in between
+        // overwrites that, and offering one site's username for another is
+        // both confusing and a small leak.
+        property string lastUser: ""
+
+        function begin(host, area, isRetry) {
+            if (host !== where)
+                lastUser = "";
+            where = host;
+            realm = area;
+            retry = isRetry;
+            // A retry means whatever was last sent for this host was rejected,
+            // whoever it came from. Keeping it would auto-fill the same wrong
+            // password on the next visit and prompt one round trip later every
+            // time; dropping it makes the store self-correcting.
+            if (isRetry)
+                passwords.forget(host);
+            if (!isRetry && passwords.available && passwords.hasCredentials(host)) {
+                awaiting = true;
+                lookupTimer.restart();
+                passwords.requestCredentials(host);
+                return;
+            }
+            ask();
+        }
+
+        function ask() {
+            awaiting = false;
+            lookupTimer.stop();
+            // The username is not the secret, and the store keeps it exactly so
+            // a prompt need not start from nothing. A retry starts from what
+            // was last tried instead -- far more often a mistyped password than
+            // the wrong account. The password field was emptied by finish().
+            userField.text = retry ? lastUser : passwords.usernameFor(where);
+            open();
+        }
+
+        title: Item {
+            width: authDialog.width
+            height: authTitle.height + 24
+            Label {
+                id: authTitle
+                anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize: 32
+                font.bold: true
+                color: "white"
+                text: authDialog.retry ? qsTr("Sign in failed") : qsTr("Sign in")
+            }
+        }
+
+        content: Item {
+            width: authDialog.width
+            height: authColumn.height + 42
+            Column {
+                id: authColumn
+                y: 21
+                anchors { left: parent.left; right: parent.right }
+                spacing: 12
+                Label {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 22
+                    color: "white"
+                    // The realm is the server's own name for the protected
+                    // area and is often the only clue which login is wanted.
+                    text: authDialog.retry
+                          ? qsTr("Wrong username or password for %1").arg(authDialog.where)
+                          : (authDialog.realm === ""
+                             ? qsTr("%1 requires a username and password").arg(authDialog.where)
+                             : qsTr("%1 requires a username and password for \"%2\"")
+                               .arg(authDialog.where).arg(authDialog.realm))
+                }
+                TextField {
+                    id: userField
+                    objectName: "userField"
+                    width: parent.width
+                    placeholderText: qsTr("Username")
+                    inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                    Keys.onReturnPressed: passField.forceActiveFocus()
+                }
+                TextField {
+                    id: passField
+                    objectName: "passField"
+                    width: parent.width
+                    placeholderText: qsTr("Password")
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                    Keys.onReturnPressed: authDialog.accept()
+                }
+                CheckBox {
+                    id: rememberBox
+                    // Hidden, not disabled, when signond cannot be reached:
+                    // an offer that cannot be kept is worse than no offer.
+                    visible: passwords.available
+                    text: qsTr("Remember password")
+                    checked: true
+                }
+            }
+        }
+
+        buttons: Item {
+            width: authDialog.width
+            height: authButtons.height + 38
+            Column {
+                id: authButtons
+                y: 38
+                anchors.horizontalCenter: parent.horizontalCenter
+                spacing: 8
+                Button {
+                    text: qsTr("Sign in")
+                    __dialogButton: true
+                    platformStyle: ButtonStyle { inverted: true }
+                    onClicked: authDialog.accept()
+                }
+                Button {
+                    text: qsTr("Cancel")
+                    __dialogButton: true
+                    platformStyle: ButtonStyle { inverted: true }
+                    onClicked: authDialog.reject()
+                }
+            }
+        }
+
+        // The panel has to be closed by hand -- the dialog goes away with the
+        // keyboard still up otherwise, since nothing else takes the focus
+        // back. And the password does not outlive the prompt that asked for
+        // it: WebKit has its own copy by now, and a retry re-asks for it.
+        function finish() {
+            userField.platformCloseSoftwareInputPanel();
+            passField.platformCloseSoftwareInputPanel();
+            passField.text = "";
+        }
+        onAccepted: {
+            // The page is waiting on this, so answer first and file the
+            // password after. Saved before it is known to be right, because
+            // nothing tells us it was -- a wrong one comes back as a retry,
+            // which forgets it again.
+            lastUser = userField.text;
+            engine.authenticate(userField.text, passField.text);
+            // passwords.available, NOT rememberBox.visible: in QtQuick 1
+            // Item.visible is EFFECTIVE visibility, so a child of the dialog
+            // reads false whenever the dialog itself is hidden -- which is
+            // exactly what it is by the time this runs. The condition wanted
+            // here is "the store works and the user asked", anyway.
+            if (passwords.available && rememberBox.checked)
+                passwords.save(where, userField.text, passField.text);
+            finish();
+        }
+        onRejected: { engine.cancelAuthentication(); finish() }
+    }
+
+    Timer {
+        id: lookupTimer
+        interval: 4000
+        // signond is a D-Bus service on its own schedule. Its failure paths do
+        // answer immediately, but a wedged one would otherwise leave the page
+        // waiting behind a prompt that never opens.
+        onTriggered: if (authDialog.awaiting) authDialog.ask()
+    }
+
+    Connections {
+        target: passwords
+        onCredentialsFound: {
+            // `host` is the store's normalised key, not what the server said,
+            // so compare like with like. A second challenge can arrive while
+            // this lookup is in flight -- the engine answers the first with
+            // nothing and moves on -- and handing one site's password to
+            // another is the one failure here that matters.
+            if (!authDialog.awaiting || host !== passwords.hostKey(authDialog.where))
+                return;
+            authDialog.awaiting = false;
+            lookupTimer.stop();
+            // Kept for the prompt a rejection would bring up.
+            authDialog.lastUser = username;
+            engine.authenticate(username, password);
+        }
+        onCredentialsNotFound: {
+            if (authDialog.awaiting && host === passwords.hostKey(authDialog.where))
+                authDialog.ask();
+        }
+    }
+
+    Connections {
+        target: engine
+        onAuthenticationRequested: authDialog.begin(where, realm, retry)
+        // The challenge died with the process, so there is nothing left to
+        // answer -- including a lookup still in flight for it. close() rather
+        // than reject(): rejecting would send an authcancel for a request the
+        // engine has already dropped.
+        onWebProcessCrashed: { authDialog.awaiting = false; authDialog.close() }
+    }
+
+    // ---- Long press on a link ---------------------------------------------
+    // The platform Menu, which is the slide-up panel the stock browser uses for
+    // this -- not ContextMenu, which anchors itself to an item and is the wrong
+    // shape. The engine reports the link under the finger (WPE turns a press
+    // held past 500 ms into a context-menu request); everything here works off
+    // that url alone, which is why none of it needs the engine.
+    Menu {
+        id: linkMenu
+        property string url: ""
+
+        MenuLayout {
+            MenuItem {
+                text: qsTr("Open in a new tab")
+                onClicked: appWindow.openTab(linkMenu.url)
+            }
+            MenuItem {
+                text: qsTr("Share link")
+                onClicked: engine.shareLink(linkMenu.url)
+            }
+            MenuItem {
+                text: qsTr("Copy link")
+                onClicked: {
+                    engine.copyToClipboard(linkMenu.url);
+                    linkBanner.text = qsTr("Link copied");
+                    linkBanner.show();
+                }
+            }
+        }
+    }
+
+    // Long press on an image. Saving goes through the engine for the same
+    // reason downloads do: Qt 4.7.4 cannot fetch https at all.
+    Menu {
+        id: imageMenu
+        property string url: ""
+
+        MenuLayout {
+            MenuItem {
+                text: qsTr("Save image")
+                onClicked: {
+                    engine.saveLink(imageMenu.url);
+                    linkBanner.text = qsTr("Saving to Downloads");
+                    linkBanner.show();
+                }
+            }
+            MenuItem {
+                text: qsTr("Open in a new tab")
+                onClicked: appWindow.openTab(imageMenu.url)
+            }
+            MenuItem {
+                text: qsTr("Share picture")
+                onClicked: engine.shareLink(imageMenu.url)
+            }
+            MenuItem {
+                text: qsTr("Copy image address")
+                onClicked: {
+                    engine.copyToClipboard(imageMenu.url);
+                    linkBanner.text = qsTr("Link copied");
+                    linkBanner.show();
+                }
+            }
+        }
+    }
+
+    InfoBanner {
+        id: linkBanner
+        timerShowTime: 1500
+    }
+
+    Connections {
+        target: engine
+        onLinkLongPressed: { linkMenu.url = url; linkMenu.open() }
+        onImageLongPressed: { imageMenu.url = url; imageMenu.open() }
+        // The Downloads page is where progress lives; this is just so a
+        // transfer that starts from a menu is not silent.
+        onDownloadFinished: { linkBanner.text = qsTr("Download finished"); linkBanner.show() }
+        onDownloadFailed: { linkBanner.text = qsTr("Download failed"); linkBanner.show() }
+    }
+
     Menu {
         id: mainMenu
         MenuLayout {
             MenuItem {
                 text: qsTr("New tab")
-                onClicked: appWindow.openTab("about:blank")
+                // Land on the address bar, focused. A blank page with nothing
+                // asking for input is where the old "New tab" left you, and
+                // there was no obvious next move from there.
+                onClicked: { appWindow.openTab("about:blank"); urlField.forceActiveFocus() }
             }
             MenuItem {
                 text: qsTr("Favourites")

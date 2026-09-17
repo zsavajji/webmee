@@ -24,8 +24,6 @@ DownloadManager::DownloadManager(QObject *parent)
     roles[StatusTextRole] = "statusText";
     setRoleNames(roles);
 
-    m_timer.setInterval(250);
-    connect(&m_timer, SIGNAL(timeout()), this, SLOT(tick()));
 }
 
 int DownloadManager::rowCount(const QModelIndex &parent) const
@@ -93,31 +91,12 @@ void DownloadManager::touched(int row)
     emit dataChanged(ix, ix);
 }
 
-// Never clobber an existing file: "photo.jpg" -> "photo-1.jpg".
-QString DownloadManager::uniquePath(const QString &suggestedName) const
-{
-    QString base = suggestedName.isEmpty() ? QString("download") : suggestedName;
-    base = base.section('/', -1);            // strip any path the server sent
-    QString candidate = m_dir + "/" + base;
-    if (!QFile::exists(candidate))
-        return candidate;
 
-    QFileInfo fi(base);
-    QString stem = fi.completeBaseName();
-    QString suffix = fi.suffix().isEmpty() ? QString() : "." + fi.suffix();
-    for (int n = 1; n < 10000; ++n) {
-        candidate = m_dir + "/" + stem + "-" + QString::number(n) + suffix;
-        if (!QFile::exists(candidate))
-            return candidate;
-    }
-    return m_dir + "/" + base;
-}
-
-void DownloadManager::start(const QString &url, const QString &suggestedName, qint64 totalBytes)
+void DownloadManager::start(const QString &url, const QString &path, qint64 totalBytes)
 {
     Item it;
     it.url = url;
-    it.path = uniquePath(suggestedName);
+    it.path = path;
     it.name = QFileInfo(it.path).fileName();
     it.received = 0;
     it.total = totalBytes;
@@ -130,9 +109,6 @@ void DownloadManager::start(const QString &url, const QString &suggestedName, qi
     emit countChanged();
     emit activeCountChanged();
     emit downloadStarted(it.name);
-
-    if (!m_timer.isActive())
-        m_timer.start();         // stub only
 }
 
 void DownloadManager::updateProgress(const QString &url, qint64 received, qint64 total)
@@ -171,6 +147,9 @@ void DownloadManager::cancel(int row)
     if (row < 0 || row >= m_items.size()) return;
     if (m_items[row].state != Running && m_items[row].state != Queued) return;
     m_items[row].state = Cancelled;
+    // Stop the transfer first: deleting a file the engine is still writing to
+    // only gets it recreated.
+    emit cancelRequested(m_items[row].url);
     // A partial file is worse than none: the user cannot tell it is truncated.
     QFile::remove(m_items[row].path);
     touched(row);
@@ -205,24 +184,3 @@ void DownloadManager::openFile(int row)
 }
 
 // ---- stub only: pretend bytes are arriving -------------------------------
-void DownloadManager::tick()
-{
-    bool anyRunning = false;
-    for (int i = 0; i < m_items.size(); ++i) {
-        if (m_items[i].state != Running)
-            continue;
-        anyRunning = true;
-        if (m_items[i].total <= 0)
-            m_items[i].total = 2 * 1024 * 1024;
-        m_items[i].received += m_items[i].total / 12;
-        if (m_items[i].received >= m_items[i].total) {
-            m_items[i].received = m_items[i].total;
-            m_items[i].state = Finished;
-            emit downloadFinished(m_items[i].name, m_items[i].path);
-            emit activeCountChanged();
-        }
-        touched(i);
-    }
-    if (!anyRunning)
-        m_timer.stop();
-}

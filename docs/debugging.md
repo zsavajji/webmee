@@ -110,6 +110,51 @@ ffmpeg -i shot.ppm -vf transpose=1 shot.png
 is locked you get the lock screen, not the app, and mostly-black output is the
 tell.
 
+## test/host — the shell's logic, without a device
+
+```sh
+sh test/host/run.sh          # a few seconds; prints ok/FAIL lines
+```
+
+Every way the shell fails is silent: a missing QML type resolves at *creation*
+time, an unregistered image provider renders nothing, a ReferenceError abandons
+the rest of a handler. `N9_TEST_QML=1` catches the first class on device; this
+catches all of them on the build host in a second, against the real source
+files rather than a copy.
+
+It works because the Qt SDK ships a **desktop Qt 4.7.4** with the same QML
+engine and the same `com.nokia.meego` components the device has.
+
+| test | what fails if it breaks |
+|---|---|
+| `qmlcheck` | any page that would not open: unknown type, misspelt property |
+| `tabtest` | tab bookkeeping — which row is current, which ids the engine is told to switch to and close, index shifting on close |
+| `authtest` | HTTP auth and the credential store: auto-fill, retry, save, and the stale-lookup case that could hand one site another's password |
+| `gesturetest` | touch, pinch and panning, driving the real `webviewitem.cpp` with synthetic `QTouchEvent`s |
+
+`tabtest` and `authtest` load the **real** `main.qml` / `BrowserPage.qml` with
+stub context properties and reach the file's own ids through
+`QDeclarativeExpression`, so nothing is duplicated and the tests cannot drift
+from the code.
+
+### Two things `run.sh` papers over, and why they are safe
+
+- **libpng12.** The SDK Qt needs it and no current distribution ships it. The
+  script generates a no-op library carrying the `PNG12_0` version tag from
+  `libQtGui`'s own undefined symbols. Nothing here decodes a PNG; the theme
+  provider just returns nothing, which the tests do not look at.
+- **X11/EGL/GLES2.** `webviewitem.cpp` includes them; the headers come from the
+  Madde sysroot and the entry points are stubbed the same way. The gesture code
+  under test calls none of them. Do **not** put the sysroot's whole
+  `/usr/include` on the include path — its 2011 `features.h` shadows the host's
+  glibc headers and nothing compiles.
+
+### What it cannot tell you
+
+Nothing that needs the engine, the GPU or signond: the protocol round trip, the
+compositing path, whether WebKit accepts a credential. Those are still a device
+run. It covers the shell's *decisions*, which is where the silent failures live.
+
 ## Method notes
 
 - **"no crash" is not "it worked".** Check pixels or a title, not just the

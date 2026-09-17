@@ -154,6 +154,23 @@ Page {
                 onClicked: clearHistoryConfirm.open()
             }
 
+            // Only shown where signond is reachable -- where it is not, nothing
+            // can have been saved, so a count of zero would just puzzle.
+            Label {
+                visible: passwords.available
+                text: qsTr("Saved passwords: %1").arg(passwords.count)
+                font.pixelSize: 20
+                color: "#999999"
+            }
+
+            Button {
+                visible: passwords.available
+                text: qsTr("Forget saved passwords")
+                enabled: passwords.count > 0
+                opacity: enabled ? 1 : 0.4
+                onClicked: forgetPasswordsConfirm.open()
+            }
+
             Label {
                 text: qsTr("Free memory: %1 MB").arg(memory.availableMb)
                 font.pixelSize: 20
@@ -172,6 +189,23 @@ Page {
         acceptButtonText: qsTr("Clear")
         rejectButtonText: qsTr("Cancel")
         onAccepted: history.clear()
+    }
+
+    QueryDialog {
+        id: forgetPasswordsConfirm
+        titleText: qsTr("Forget saved passwords")
+        message: qsTr("Remove the passwords saved for %1 site(s)? "
+                      + "This cannot be undone.").arg(passwords.count)
+        acceptButtonText: qsTr("Forget")
+        rejectButtonText: qsTr("Cancel")
+        onAccepted: {
+            // hosts() hands back a copy, so removing as we walk it is safe.
+            // The store has no clear-all of its own and does not need one for
+            // a list this short.
+            var h = passwords.hosts();
+            for (var i = 0; i < h.length; ++i)
+                passwords.forget(h[i]);
+        }
     }
 
     // Outside the Column deliberately. Dialog takes its width from its parent

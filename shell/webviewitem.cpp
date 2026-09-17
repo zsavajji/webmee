@@ -20,6 +20,11 @@ static const double kMinViewScale = 1.0;
 // GL_MAX_TEXTURE_SIZE is 2048 here and the viewport is 674 px tall, so the
 // engine cannot render more than 3x. Asking for more would just be clamped.
 static const double kMaxViewScale = 3.0;
+// Finger slop before a magnified drag is taken to mean pan or scroll. Smaller
+// than WebKit's own scroll threshold on purpose: it only has to outlast the
+// wobble of putting a finger down, and the drag is handed over well before
+// WebKit would have started scrolling anyway.
+static const double kDragSlop = 12.0;
 
 namespace {
 
@@ -115,6 +120,7 @@ WebViewItem::WebViewItem(QDeclarativeItem *parent)
     , m_bottomInset(0)
     , m_haveTouch(false)
     , m_touchDown(false)
+    , m_drag(DragPage)
     , m_pinching(false)
     , m_pinchBaseDistance(0.0)
     , m_viewScale(1.0)
@@ -149,10 +155,35 @@ WebViewItem::~WebViewItem()
 
 void WebViewItem::setEngineWindow(qulonglong window)
 {
-    if (m_window == (unsigned long) window)
-        return;
+    // No early return when the id is unchanged, however wasteful that looks.
+    // The engine reports a window ONLY from egl_target_initialize, immediately
+    // after creating one, so every report means a genuinely new window -- and
+    // the old one was just destroyed by egl_target_deinitialize, which frees
+    // its XID for the server to hand out again. A new web process can therefore
+    // be given the exact id the dead one had.
+    //
+    // Treating that as "nothing changed" was the bug: the shell kept a pixmap
+    // named from a destroyed window, which is freed memory and on this tiler
+    // the previous framebuffer, and nothing ever re-acquired it. That is both
+    // the rotated ghost on navigation AND the page that never comes back when
+    // switching to a tab -- one cause, two symptoms.
     releasePixmap();
     m_window = (unsigned long) window;
+    // A new window has had nothing rendered into it yet -- exactly the startup
+    // situation, and its freshly created pixmap is the same undefined memory,
+    // which on this tiler is the previous framebuffer. m_sawFrame is a LATCH,
+    // though: it is cleared at startup and by pageCrashed() and never
+    // otherwise, so without this paint() would happily draw that ghost the
+    // moment the id changed -- a rotated copy of our own UI across the page
+    // area until the new page painted.
+    //
+    // This is not rare. The engine hands over a new window on every cross-site
+    // navigation, because WebKit starts a new web process for one; see
+    // docs/process-swap.md.
+    if (m_sawFrame) {
+        m_sawFrame = false;
+        emit paintedChanged();      // QML puts the splash back until a frame lands
+    }
     update();
 }
 
@@ -615,6 +646,43 @@ QPointF WebViewItem::toSurface(const QPointF &p) const
                    (m_viewOrigin.y() + vFraction(p.y()) / m_viewScale) * s.height());
 }
 
+/*
+ * Slide the window into the surface sideways.
+ *
+ * Magnification does not change the CSS viewport -- that is the whole point of
+ * it, nothing reflows -- so a magnified page is exactly as wide as the window
+ * and WebKit has nothing to scroll horizontally. The extra pixels are in the
+ * SURFACE, and m_viewOrigin.x is the only thing that chooses which slice of it
+ * is on screen. Without this, everything outside the slice the pinch happened
+ * to leave behind is unreachable: at 3x that is two thirds of the page.
+ *
+ * paint() draws texture columns u0 .. u0 + 1/scale across the item's full
+ * width, so dx item pixels is (dx / width) / scale of the texture, and the
+ * origin moves against the finger.
+ */
+// The press, in surface coordinates. Held back until a magnified gesture has
+// been classified, so it has to be emittable from three places.
+void WebViewItem::pressAt(const QPointF &itemPoint)
+{
+    const QPointF p = toSurface(itemPoint);
+    emit touched("down", 0, int(p.x()), int(p.y()));
+}
+
+void WebViewItem::panBy(double dxItem)
+{
+    const double w = width();
+    if (w <= 0 || m_viewScale <= 1.0)
+        return;
+    const double maxU = 1.0 - 1.0 / m_viewScale;
+    double u = m_viewOrigin.x() - (dxItem / w) / m_viewScale;
+    if (u < 0.0) u = 0.0;
+    if (u > maxU) u = maxU;
+    if (u == m_viewOrigin.x())
+        return;
+    m_viewOrigin.setX(u);
+    update();
+}
+
 void WebViewItem::handleTouch(QTouchEvent *event)
 {
     m_haveTouch = true;
@@ -638,11 +706,16 @@ void WebViewItem::handleTouch(QTouchEvent *event)
             m_pinchStartOrigin = m_viewOrigin;
             m_pinchStartCentre = (a + b) / 2.0;
             // End the drag the first finger had started, or WebKit keeps
-            // scrolling the page underneath the pinch.
+            // scrolling the page underneath the pinch. Only if it ever
+            // reached the page: a pan, or a press still being classified,
+            // never sent a down, and an unmatched up would read as a click.
             if (m_touchDown) {
-                const QPointF ua = toSurface(a);
-                emit touched("up", 0, int(ua.x()), int(ua.y()));
+                if (m_drag == DragPage) {
+                    const QPointF ua = toSurface(a);
+                    emit touched("up", 0, int(ua.x()), int(ua.y()));
+                }
                 m_touchDown = false;
+                m_drag = DragPage;
             }
         } else if (m_pinchBaseDistance > 8.0) {   // ignore a degenerate start
             double scale = m_pinchStartScale * (d / m_pinchBaseDistance);
@@ -694,21 +767,68 @@ void WebViewItem::handleTouch(QTouchEvent *event)
 
     if (live.isEmpty()) {
         if (m_touchDown) {
-            const QPointF p = toSurface(all.isEmpty() ? QPointF() : all.last().pos());
-            emit touched("up", 0, int(p.x()), int(p.y()));
+            // A pan was never the page's gesture, so there is nothing to end.
+            // Anything else gets its up -- and a press that was still
+            // undecided is a tap, which needs the down that was held back.
+            if (m_drag != DragPan) {
+                if (m_drag == DragUndecided)
+                    pressAt(m_touchStart);
+                const QPointF p = toSurface(all.isEmpty() ? QPointF() : all.last().pos());
+                emit touched("up", 0, int(p.x()), int(p.y()));
+            }
             m_touchDown = false;
+            m_drag = DragPage;
         }
         return;
     }
 
-    const QPointF p = toSurface(live.first().pos());
+    const QPointF pos = live.first().pos();
     if (!m_touchDown) {
         // Started on the chrome, not on the page.
-        if (!inPage(live.first().pos()))
+        if (!inPage(pos))
             return;
         m_touchDown = true;
-        emit touched("down", 0, int(p.x()), int(p.y()));
-    } else {
-        emit touched("motion", 0, int(p.x()), int(p.y()));
+        m_touchStart = pos;
+        m_panLast = pos;
+        m_drag = (m_viewScale > 1.0) ? DragUndecided : DragPage;
+        // Unmagnified there is nothing to decide, so the press goes straight
+        // through as it always did. Magnified it is held back: once WebKit has
+        // a press it will turn a still finger into a click on release, and a
+        // pan that finishes inside the gesture controller's 200 ms window
+        // would follow whatever link it started on.
+        if (m_drag == DragPage)
+            pressAt(pos);
+        return;
     }
+
+    if (m_drag == DragUndecided) {
+        const QPointF d = pos - m_touchStart;
+        if (::hypot(d.x(), d.y()) < kDragSlop)
+            return;                             // still finger slop
+        if (qAbs(d.x()) > qAbs(d.y())) {
+            m_drag = DragPan;
+        } else {
+            // ponytail: vertical is always the page, never the window. The
+            // window is short vertically too, so the last screenful of a
+            // document cannot be brought into it at high magnification --
+            // but panning vertically instead would mean dragging through the
+            // whole magnified viewport before the page scrolled at all, which
+            // is worse on every page than it is better on the last screen of
+            // one. Pan vertically once clamped if that stops being true.
+            m_drag = DragPage;
+            // From where the finger actually landed, not from here: WebKit
+            // measures its own scroll from the press, and starting it late
+            // loses the first slop pixels of every drag.
+            pressAt(m_touchStart);
+        }
+    }
+
+    if (m_drag == DragPan) {
+        panBy(pos.x() - m_panLast.x());
+        m_panLast = pos;
+        return;
+    }
+
+    const QPointF p = toSurface(pos);
+    emit touched("motion", 0, int(p.x()), int(p.y()));
 }

@@ -28,9 +28,10 @@ QtWebKit 2.2 cannot.
 | [docs/device.md](docs/device.md) | Measured hardware and OS facts. **Read before assuming anything about this device** |
 | [docs/protocol.md](docs/protocol.md) | The shell ↔ engine line protocol, normative |
 | [docs/building.md](docs/building.md) | Toolchains, build order, packaging, and the traps in each |
-| [docs/debugging.md](docs/debugging.md) | Probes, crash capture without gdb, and the env vars that make the app testable |
+| [docs/debugging.md](docs/debugging.md) | Probes, crash capture without gdb, the host-side test suite, and the env vars that make the app testable |
 | [docs/performance.md](docs/performance.md) | What was measured, what helped, what did not, and the harnesses to resume with |
 | [docs/qml-components.md](docs/qml-components.md) | Which QML types actually exist on the device, probed rather than assumed |
+| [docs/process-swap.md](docs/process-swap.md) | **Open bug.** The browser stalls every few links: a web process per cross-site navigation, measured, with every cheap fix ruled out |
 | [docs/gotchas.md](docs/gotchas.md) | Catalogue of everything that cost real time, with the evidence |
 
 ## Layout
@@ -41,6 +42,7 @@ backend/    WPE backend: X11/EGL window, input, crash handler
 shell/      Qt/QML shell: UI, texture compositing, stores
 deps/       cross-build scripts for the whole dependency stack
 probe/      standalone device probes (GL limits, shader replay, crash capture)
+test/host/  the shell's logic tested on the build host, no device needed
 icon/       icon generator (pure Python, no dependencies)
 docs/       this documentation
 deploy.sh   assemble + push the on-device tree
@@ -57,6 +59,7 @@ and the choice sticks.
 Working and verified on device: flexbox/grid/custom-property layout, JIT,
 GPU compositing in portrait, HTTPS, disk cache, touch input with
 drag-to-scroll, pinch magnification, favourites, downloads, history
-suggestions, memory-pressure shedding, password storage via signond.
+suggestions, memory-pressure shedding, password storage via signond,
+HTTP basic/digest authentication.
 
 Known gaps are listed at the end of [docs/architecture.md](docs/architecture.md).

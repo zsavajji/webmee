@@ -85,6 +85,20 @@ Q_DECL_EXPORT int main(int argc, char **argv)   // Q_DECL_EXPORT: applauncherd d
                      &history, SLOT(visit(QString,QString)));
 
     QObject::connect(&memory, SIGNAL(pressure(int)), &engine, SLOT(onMemoryPressure(int)));
+
+    // Downloads run in the engine and are drawn by the shell. One constant for
+    // where they land, set here rather than hardcoded on both sides.
+    engine.setDownloadDir(downloads.downloadDir());
+    QObject::connect(&engine, SIGNAL(downloadStarted(QString,QString,qint64)),
+                     &downloads, SLOT(start(QString,QString,qint64)));
+    QObject::connect(&engine, SIGNAL(downloadProgress(QString,qint64,qint64)),
+                     &downloads, SLOT(updateProgress(QString,qint64,qint64)));
+    QObject::connect(&engine, SIGNAL(downloadFinished(QString)),
+                     &downloads, SLOT(finish(QString)));
+    QObject::connect(&engine, SIGNAL(downloadFailed(QString,QString)),
+                     &downloads, SLOT(fail(QString,QString)));
+    QObject::connect(&downloads, SIGNAL(cancelRequested(QString)),
+                     &engine, SLOT(cancelDownload(QString)));
     memory.setThresholds(140, 70);
     memory.start();
 

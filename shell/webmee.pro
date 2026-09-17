@@ -3,6 +3,14 @@
 TEMPLATE = app
 TARGET = WebMee
 
+# The platform share sheet (com.nokia.ShareUi over D-Bus).
+# The .prf adds the interface headers and pulls in CONFIG += meegotouch, but
+# MDataUri lives in a directory of its own that neither puts on the path, so
+# `#include <MDataUri>` fails until this is added by hand.
+CONFIG += shareuiinterface-maemo-meegotouch
+INCLUDEPATH += /usr/include/MDataUri
+LIBS += -lmdatauri
+
 QT += declarative opengl
 CONFIG += qdeclarative-boostable
 

@@ -29,6 +29,29 @@ undefined memory — on this tiler, routinely the previous framebuffer. Never
 release a good texture before a correctly-sized replacement has content, and
 draw nothing before the first frame.
 
+**...and the same ghost again, on navigation, and a tab that never comes back.**
+One cause, two symptoms, and `setEngineWindow()` is where both live.
+
+Two things had to be got right there, and the first hid the second:
+
+1. `m_sawFrame` (what "draw nothing before the first frame" is built on) is a
+   **latch** — set once, cleared only at startup and by `pageCrashed()`. A new
+   engine window mid-session is the startup situation again, so the latch has
+   to be cleared or the ghost is drawn the instant the id changes.
+2. **Do not skip the work when the reported id is unchanged.** The engine
+   reports a window only from `egl_target_initialize`, immediately after
+   creating one, and `egl_target_deinitialize` destroys the previous one —
+   which frees its XID for the server to hand out again. An identical id means
+   a *different* window, not the same one. Returning early there keeps a pixmap
+   named from a destroyed window, which is freed memory, and nothing ever
+   re-acquires it: the ghost then never clears, and the page never reappears.
+
+Fixing (1) alone changes nothing whenever the id repeats, because the early
+return sits above it. New windows arrive on every cross-site navigation, since
+WebKit starts a new web process for one — see
+[process-swap.md](process-swap.md) — which is why this shows up a few links in
+and never on the first page.
+
 **Every pixmap rejected, black page.** The logical size is device ÷ scale
 *rounded*, so the surface WebKit produces can be a pixel off what either side
 predicted (480×673 against an expected 480×674). Compare with tolerance.
@@ -130,8 +153,46 @@ Take the first tap with a `MouseArea` that is disabled once focused.
 **Touch never reaches items.** `QGraphicsView` routes touch only when its
 **viewport widget** has `Qt::WA_AcceptTouchEvents`.
 
+**A dialog is open and the tap lands on the page behind it too.** The same
+fall-through as the URL bar above: only the web view sets `acceptTouchEvents`,
+so QGraphicsScene delivers touch down through the popup's plain QML items. The
+URL bar could fix this with `inPage()` because it is at a known edge; a dialog
+is in the middle of the screen. `BrowserPage` disables the web view item while
+any popup is up (`page.modalUp`). A disabled `QGraphicsItem` gets no events,
+and `enabled` does not affect painting, so the page still renders behind it.
+
+**The browser pauses for tens of seconds every few links, then recovers.** Not
+overload and not the memory watcher: WebKit starts a web process per cross-site
+navigation and four end up alive at once. Count `WPEWebProcess` before blaming
+anything else. Open bug, with the measurements and the dead ends in
+[process-swap.md](process-swap.md).
+
+**`grep -c "literal" <binary>` on the BUILD HOST silently matches nothing.** The
+busybox substitute for `strings` works on device and misleads here — GNU grep
+treats the file as binary and suppresses the count. Use `strings -a | grep -c`
+on the host. Concluding "the symbol is not in the library" the first way is how
+a working fix nearly got written off.
+
+**A password-protected site loads a page saying Unauthorized.** WPE's default
+`authenticate` handler is `return FALSE` and the port has no dialog of its own,
+so the challenge is answered with nothing. The prompt has to come from the
+shell; see [protocol.md](protocol.md).
+
 **A GL viewport needs `FullViewportUpdate`**; Qt cannot track dirty regions
 across the swap.
+
+**A magnified page will not move sideways.** Magnification deliberately leaves
+the CSS viewport alone, so the page is exactly as wide as the window and WebKit
+has nothing to scroll horizontally — the extra pixels are in the surface, and
+only the shell's `m_viewOrigin.x` selects which slice is drawn. Forwarding the
+drag to the engine looks reasonable and does nothing. See
+[architecture.md](architecture.md).
+
+**A drag that pans clicks the link it started on.** WPE's
+`TouchGestureController` turns a press into a click on release unless the touch
+moved `pixelsPerLineStep` or was down 200 ms. A pan holds the surface point
+under the finger still by design, so a quick one hits neither threshold. Do not
+forward the press until the gesture is known.
 
 **`InfoBanner is not a type`** — needs `import com.nokia.extras 1.1` (1.0 is not
 enough).
@@ -141,6 +202,36 @@ not exist resolves at *creation* time, not load time. `SelectionListItem` is not
 a Harmattan component; `SelectionDialog` is. Check
 [qml-components.md](qml-components.md), and use `N9_TEST_QML=1` to instantiate
 every page at startup instead of waiting for a tap.
+
+**An `Image` shows nothing and warns about nothing.** A url naming an image
+provider that was never registered fails exactly like a `image://theme/` typo.
+The tab switcher drew `image://tab/<index>` for months against no provider at
+all. A missing provider is not a broken image — it is a blank one.
+
+**`DialogStatus.Closed` is 3, not 0.** `Opening` is 0, so
+`if (dialog.status)` is false for a dialog that is opening and true for one that
+is shut. Compare against the named value, never truthiness.
+
+**`Item.visible` is EFFECTIVE visibility, not the property you bound.**
+QtQuick 1 reads it off `QGraphicsItem`, whose hide propagates down and clears
+the flag on every child. A control inside a closed dialog therefore reports
+`visible: false` however its own binding evaluates. Reading a child's `visible`
+to mean "this option is on offer" fails exactly when a dialog handler runs,
+because the dialog is closing by then — the auth prompt's "Remember password"
+never saved anything until it was changed to test `passwords.available`
+directly.
+
+**The suggestion list stays up over the page that just loaded.**
+`urlField.focus = false` reads as "drop the focus" and does not do it: the
+platform `TextField` keeps `activeFocus`, and anything bound to that — here the
+suggestion list's `opacity` — stays as it was. QML focus has to GO somewhere.
+Hand it to a plain `Item` that wants nothing (`urlBar.forceActiveFocus()`).
+
+This one had already been "fixed" once with `focus = false` and a comment
+explaining the symptom, which is how it survived: the code looked like it
+handled the case. It is also invisible to a test that never opens the list —
+three assertions passed vacuously here before the stub was complete enough for
+the list to appear at all.
 
 **A handler stops halfway with no visible error.** A ReferenceError in a QML
 signal handler abandons the rest of the function silently.
@@ -203,6 +294,19 @@ it (exit 144). Use `pgrep -x` or a bracketed class.
 
 **The .deb installs on a desktop and fails on the device.** Harmattan's 2011
 dpkg cannot read zstd/xz. Use `dpkg-deb -Zgzip`.
+
+**"Manifest cannot have `<! ..>` elements", and the manifest is full of
+comments.** Comments are fine. A **double hyphen inside an XML comment** is
+illegal XML, and aegis reports the parse failure that way — using `--` as an
+em-dash in the rationale is all it takes. Aegis only parses at install time on the device, so this costs a full transfer
+to discover; `package.sh` now refuses to build unless the manifest parses.
+
+**"request 'UID::user' for 'applauncherd-launcher::...' ignored, matched by
+deny rule".** Harmless, and a sign the line is doing nothing. The
+`<for path="applauncherd-launcher::...">` entry propagates **capability**
+credentials to the launcher so a boosted app keeps them; identity tokens like
+`UID::user` cannot be propagated and hit a deny rule. Add that line when there
+is a real capability to carry, not before.
 
 **Unexplained web-process crashes after a deploy.** The injected bundle shipped
 to the wrong path because a `cp` flattened `lib/wpe-webkit-2.0/`. WebKit
