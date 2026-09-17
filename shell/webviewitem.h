@@ -80,10 +80,14 @@ signals:
     // QGraphicsScene hands a mouse event -- so nothing has to be un-rotated.
     void touched(const QString &kind, int slot, int x, int y);
     void paintedChanged();
+    // The finger has been down long enough, and still enough, to be a long
+    // press. In SURFACE device pixels, like every other touch coordinate.
+    void longPressed(int x, int y);
 
 private slots:
     // Geometry settles before the engine hears about it -- see the timer.
     void commitSurfaceSize();
+    void longPressElapsed();
 
 protected:
     void geometryChanged(const QRectF &newGeometry, const QRectF &oldGeometry);
@@ -128,6 +132,9 @@ private:
     enum DragKind { DragUndecided, DragPage, DragPan };
     DragKind m_drag;
     QPointF m_touchStart;        // item coords of the press
+    bool m_movedEnough;          // the finger has left the slop around the press
+    QTimer m_longPressTimer;
+    QPointF m_pressSurface;      // where the press landed, in surface pixels
     QPointF m_panLast;           // item coords the pan last consumed
     bool m_pinching;
     double m_pinchBaseDistance;

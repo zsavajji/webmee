@@ -54,7 +54,10 @@ package.sh  build the installable .deb
 JavaScript defaults to **off** — one core, and a page's scripts hold it rather
 than burn it (3.6x the frames with it off; see
 [docs/performance.md](docs/performance.md)). Settings → JavaScript turns it on
-and the choice sticks.
+and the choice sticks. "Off" strips scripts from the page at parse time
+(`enable-javascript-markup`) rather than shutting down the JS engine, so the
+browser's own injected scripts still run — see
+[docs/gotchas.md](docs/gotchas.md).
 
 Working and verified on device: flexbox/grid/custom-property layout, JIT,
 GPU compositing in portrait, HTTPS, disk cache, touch input with

@@ -27,6 +27,7 @@ next read (`BrowserEngine::onEngineOutput`).
 | `scrollby <dx> <dy>` | Scroll the page, in CSS pixels. Used to lift the caret clear of the keyboard. |
 | `authok <b64user> <b64pass>` | Answer the pending HTTP authentication challenge. Both fields are base64: a password routinely contains a space, which this protocol cannot carry anywhere but the last field. |
 | `authcancel` | Answer it with no credentials. The page then loads the server's 401 body. |
+| `contextmenu <x> <y>` | Raise the page's context menu at a point, in surface device pixels. The shell times the long press itself: WPE's gesture controller only decides a press was long when the finger **lifts**, so a menu driven by it cannot appear until release. |
 | `dlsave <uri>` | Download a url the user picked (the image menu's Save), rather than one a page navigated to. |
 | `dlcancel <uri>` | Stop a running download. Keyed by uri, which is what the shell's model is keyed by. |
 | `axis <x> <y> <dx> <dy>` | A wheel event. **Unproven** — see the note below. |
@@ -106,6 +107,21 @@ one — `WPEWebProcess` peaks at 116–127 MB against the ~150 MB free — so th
 shell keeps a list of addresses and switching is a plain `load`. All tabs share
 one back/forward history, and switching re-fetches.
 
+A row carries `tabScroll` as well, so a reader coming back to a tab lands where
+they left off rather than at the top. It is banked from `engine.scrollY` before
+`currentTab` moves — after, and it would be written to the wrong row — and
+applied as one `scrollby` when `loading` goes 0, which measured correct on a
+real page (`en.m.wikipedia.org`, restored to 900 px) as well as a synthetic one.
+It carries a `pendingTab` so that switching away again mid-load cannot drop one
+tab's position into another tab's page. Note the role has to be declared in the
+model's first `ListElement`: a QML1 `ListModel` fixes its roles there, and
+`setProperty` for a role that was never declared is silently dropped.
+
+**This only works because "JavaScript off" no longer means the JS engine is
+off** — scroll is reported by an injected user script and applied through
+`evaluate_javascript`, both of which were dead in the default configuration.
+See [gotchas.md](gotchas.md).
+
 ### What was broken, and what was tried
 
 Three silent failures, all in the shell:
@@ -176,6 +192,23 @@ what compiles and the event parameter is omitted from both the signal and the
 emit. Declaring the extra parameter shifts everything along, and the hit test
 lands in the `user_data` slot: the handler sees a plausible NULL rather than
 crashing.
+
+**The menu appears on the timer, not on release.** Upstream returns its
+`ContextMenuEvent` from the `up` branch, so anything driven by it waits for the
+finger to lift. The shell runs its own 500 ms timer — the same threshold, so the
+two cannot disagree — and asks for the menu with `contextmenu <x> <y>`. Movement
+past the slop, a lift, a second finger or a pan all cancel it.
+
+WPE then raises its own menu on release anyway, so a second `link` arrives for
+the same press. The shell ignores any that comes in while a menu or dialog is
+already up.
+
+**Any motion event kills a long press.** The controller promotes a press to a
+scroll when `deltaTime >= scrollCaptureThreshold` — an **or** beside the
+distance test, so a motion of *zero pixels* does it once 200 ms have passed. A
+finger resting on glass emits a stream of them. The shell swallows motion until
+the finger leaves an 8 px slop. Measured: no motion → long press fires; one
+motion at the identical coordinates → it never does.
 
 Verified on device: short tap navigates; long press reports `link` and does not
 navigate; a bare image reports `image`; a linked image reports `link`.

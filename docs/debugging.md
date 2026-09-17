@@ -166,6 +166,15 @@ run. It covers the shell's *decisions*, which is where the silent failures live.
   `grep -c "ROUNDED_RECT_ARRAY_SIZE 12" lib.so`.
 - **Verify the artifact, not the source.** Check the shipped `.so` contains the
   patch before concluding a fix did not work.
+- **Driving the engine by hand needs the shell's environment, not just its
+  libraries.** A probe that pipes commands into `webmee-engine` inherits none of
+  what `BrowserEngine::start()` sets, and the omission that bites is
+  `SSL_CERT_FILE` — every https page comes back `failed TLS unknown-CA`, renders
+  an error page, and then behaves exactly like a page that loaded but will not
+  scroll. That produced a confident diagnosis of a layout-timing bug that did
+  not exist. Check for a `failed` line in the output before interpreting
+  anything else. The full set is in `browserengine.cpp` around the `env` list.
+
 - **Bisect with real pages.** Saving a page locally, stripping scripts, and
   halving the DOM turned "github crashes" into a seven-line reproducer with no
   network and no JS.

@@ -19,17 +19,33 @@ class StubEngine : public QObject {
     Q_OBJECT
     Q_PROPERTY(QString url READ url NOTIFY urlChanged)
     Q_PROPERTY(QString title READ title NOTIFY titleChanged)
+    Q_PROPERTY(int scrollY READ scrollY NOTIFY scrollChanged)
+    Q_PROPERTY(bool loading READ loading NOTIFY loadingChanged)
 public:
     QStringList log;
     QString m_url, m_title;
+    int m_scrollY; bool m_loading;
+    StubEngine() : m_scrollY(0), m_loading(false) {}
     QString url() const { return m_url; }
     QString title() const { return m_title; }
+    int scrollY() const { return m_scrollY; }
+    bool loading() const { return m_loading; }
+    void setScroll(int y) { m_scrollY = y; emit scrollChanged(); }
+    // The real engine zeroes scrollY at load commit, so a restore is always
+    // relative to the top; the stub has to do the same or the test would pass
+    // on an implementation that only works from a scrolled page.
+    void finishLoad() {
+        m_loading = true;  emit loadingChanged();
+        m_scrollY = 0;     emit scrollChanged();
+        m_loading = false; emit loadingChanged();
+    }
     void arrive(const QString &u, const QString &t) {
         m_url = u; emit urlChanged();
         m_title = t; emit titleChanged();
     }
 public slots:
     void load(const QString &a)              { log << "load " + a; }
+    void scrollBy(int dx, int dy)            { log << QString("scrollby %1 %2").arg(dx).arg(dy); }
         // The page also listens for these; declaring them keeps the real
     // Connections blocks bindable, which is itself worth checking.
     void askAuth(const QString &w, const QString &r, bool retry)
@@ -37,6 +53,8 @@ public slots:
 signals:
     void urlChanged();
     void titleChanged();
+    void scrollChanged();
+    void loadingChanged();
     void authenticationRequested(const QString &where, const QString &realm, bool retry);
     void webProcessCrashed();
 };
@@ -137,6 +155,36 @@ int main(int argc, char **argv)
     run("closeTab(0)");
     is("last tab is kept",  eval("tabModel.count"), "1");
     is("and nothing was sent", stub.log.join("|"), "");
+
+    // --- scroll position survives a tab switch ---------------------------
+    // One tab is left here, showing third.example.
+    stub.setScroll(900);
+    run("openTab('http://b.example/')");
+    is("switching away banks the position", eval("tabModel.get(0).tabScroll"), "900");
+    is("a new tab starts at the top",       eval("tabModel.get(1).tabScroll"), "0");
+
+    stub.setScroll(0);
+    stub.log.clear();
+    run("showTab(0)");
+    is("nothing is scrolled before the load finishes", stub.log.join("|"),
+       "load http://third.example/");
+    stub.finishLoad();
+    is("position restored when the load finishes", stub.log.join("|"),
+       "load http://third.example/|scrollby 0 900");
+
+    stub.log.clear();
+    stub.finishLoad();
+    is("and only once", stub.log.join("|"), "");
+
+    // Switching away mid-load must not drop tab 0's position into tab 1.
+    stub.setScroll(0);
+    run("showTab(1)");
+    stub.log.clear();
+    run("showTab(0)");          // pending 900 for row 0 ...
+    run("showTab(1)");          // ... but we are on row 1 when it lands
+    stub.finishLoad();
+    is("a pending restore does not follow the switch", stub.log.join("|"),
+       "load http://third.example/|load http://b.example/");
 
     // The auth prompt moved to authtest.cpp once it grew a credential
     // store to stub; duplicating it here only duplicated the stubs.

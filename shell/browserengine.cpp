@@ -508,6 +508,11 @@ void BrowserEngine::saveLink(const QString &url)
         send("dlsave " + url);
 }
 
+void BrowserEngine::requestContextMenu(int x, int y)
+{
+    send(QString("contextmenu %1 %2").arg(x).arg(y));
+}
+
 void BrowserEngine::cancelDownload(const QString &url)
 {
     send("dlcancel " + url);

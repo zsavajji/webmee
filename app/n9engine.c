@@ -18,7 +18,7 @@
  *        axis <x> <y> <dx> <dy> | layoutwidth <css px>
  *        text <utf8> | key <keysym> <0|1> | scrollby <dx> <dy>
  *        authok <b64user> <b64pass> | authcancel
- *        dlcancel <uri> | dlsave <uri>
+ *        dlcancel <uri> | dlsave <uri> | contextmenu <x> <y>
  *   out: ... | ime <0|1> | imerect <x> <y> <w> <h>
  *        clearcache | clearcookies | quit
  *   out: ... | surface <w> <h>
@@ -627,6 +627,28 @@ static void on_web_process_terminated(WebKitWebView *v,
 }
 
 /*
+ * "JavaScript off" means the PAGE's scripts are off, not ours.
+ *
+ * enable-javascript=FALSE kills the whole JS engine, which also silences the
+ * injected scroll reporter below and makes evaluate_javascript ("scrollby") a
+ * no-op -- so with the default settings the URL bar never hid, the caret was
+ * never lifted clear of the keyboard, and scroll position could not be read
+ * back at all. It looked like those features were broken; they were never
+ * reached.
+ *
+ * enable-javascript-markup=FALSE strips every script element and on* attribute
+ * during parsing instead, so nothing the page ships ever runs -- which is the
+ * whole of the 3.6x frame win -- while user scripts and evaluate_javascript
+ * keep working. (Since 2.24; documented as "executing JavaScript is still
+ * allowed if enable-javascript is TRUE".)
+ */
+static void set_javascript(WebKitSettings *st, gboolean on)
+{
+    webkit_settings_set_enable_javascript(st, TRUE);
+    webkit_settings_set_enable_javascript_markup(st, on);
+}
+
+/*
  * Scroll reporting, for the URL bar's hide-on-scroll.
  *
  * A script message handler rather than polling window.scrollY: this is
@@ -824,6 +846,43 @@ static void handle_command(const char *line)
             g_free(us); g_free(ps); g_free(u); g_free(p);
         }
         g_strfreev(f);
+    } else if (!strncmp(line, "contextmenu ", 12)) {
+        /*
+         * Raise the context menu at a point, in surface device pixels.
+         *
+         * WPE only decides a press was a long one when the finger LIFTS --
+         * TouchGestureController returns its ContextMenuEvent from the `up`
+         * branch -- so a menu driven by it cannot appear while the finger is
+         * still down. The shell times the press itself and asks for the menu
+         * at the threshold instead.
+         *
+         * The motion first, then the button: WebCore hit-tests wherever it
+         * last believed the pointer to be, so without the move the menu is
+         * raised for the wrong node. Button 2 is the right button, which is
+         * what WebCore raises a context menu from.
+         */
+        int x, y;
+        if (sscanf(line + 12, "%d %d", &x, &y) == 2) {
+            struct wpe_view_backend *b =
+                webkit_web_view_backend_get_wpe_backend(webkit_web_view_get_backend(view));
+            if (b) {
+                struct wpe_input_pointer_event e;
+                memset(&e, 0, sizeof e);
+                e.time = now_ms();
+                e.x = x;
+                e.y = y;
+                e.type = wpe_input_pointer_event_type_motion;
+                wpe_view_backend_dispatch_pointer_event(b, &e);
+                e.type = wpe_input_pointer_event_type_button;
+                e.button = 2;
+                e.state = 1;
+                e.modifiers = wpe_input_pointer_modifier_button2;
+                wpe_view_backend_dispatch_pointer_event(b, &e);
+                e.state = 0;
+                e.modifiers = 0;
+                wpe_view_backend_dispatch_pointer_event(b, &e);
+            }
+        }
     } else if (!strncmp(line, "dlsave ", 7)) {
         /* Download something the user chose rather than something the page
            navigated to. Same machinery: download-started fires either way. */
@@ -889,7 +948,7 @@ static void handle_command(const char *line)
         if (sscanf(line + 4, "%31s %d", key, &val) == 2) {
             WebKitSettings *st = webkit_web_view_get_settings(view);
             if (!strcmp(key, "javascript"))
-                webkit_settings_set_enable_javascript(st, val ? TRUE : FALSE);
+                set_javascript(st, val ? TRUE : FALSE);
             else if (!strcmp(key, "images"))
                 webkit_settings_set_auto_load_images(st, val ? TRUE : FALSE);
         }
@@ -1101,7 +1160,7 @@ int main(int argc, char *argv[])
     {
         WebKitSettings *st = webkit_web_view_get_settings(view);
         if (env_flag("N9_NO_JS")) {
-            webkit_settings_set_enable_javascript(st, FALSE);
+            set_javascript(st, FALSE);
             fprintf(stderr, "[n9engine] javascript disabled\n");
         }
         /* Must be in place before the first load: a site decides which layout

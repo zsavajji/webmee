@@ -153,6 +153,18 @@ Take the first tap with a `MouseArea` that is disabled once focused.
 **Touch never reaches items.** `QGraphicsView` routes touch only when its
 **viewport widget** has `Qt::WA_AcceptTouchEvents`.
 
+**Long press works when driven by a script and never with a finger.** WPE's
+`TouchGestureController` promotes a press to a scroll on any motion once 200 ms
+have passed — `deltaTime >= scrollCaptureThreshold` is an **or** alongside the
+distance test, so a motion of *zero pixels* is enough. A finger resting on glass
+produces a stream of `TouchUpdate`s, so the gesture became a scroll long before
+it could reach the 500 ms long-press threshold. Measured on device: no motion →
+long press fires; one motion at the identical coordinates → it never does.
+
+The shell therefore swallows motion until the finger leaves a small slop around
+the press (`kMoveSlop`). This is also why a synthetic probe is not proof for
+touch: it sends exactly the events you write, and a real finger sends more.
+
 **A dialog is open and the tap lands on the page behind it too.** The same
 fall-through as the URL bar above: only the web view sets `acceptTouchEvents`,
 so QGraphicsScene delivers touch down through the popup's plain QML items. The
@@ -376,6 +388,33 @@ The environment mechanism for this existed and simply was not used for
 JavaScript or images — the shell sent them only over the protocol, which lands
 after `load_uri`. It was invisible while the startup URL was `about:blank` and
 became load-bearing the moment JavaScript defaulted to off.
+
+**"JavaScript off" must mean the PAGE's scripts, not the JS engine.** The
+browser's own features are built out of JavaScript, and
+`enable-javascript=FALSE` turns those off too. It takes the injected scroll
+reporter with it — so the shell received **zero** `scroll` events, and
+`evaluate_javascript` (the `scrollby` command) became a silent no-op. Three
+features were dead in the default configuration and each looked like a bug of
+its own: the URL bar never hid on scroll, the caret was never lifted clear of
+the on-screen keyboard, and a tab's scroll position could not be read back.
+
+`enable-javascript-markup=FALSE` is the setting that was actually wanted. It
+strips every `<script>` and `on*` attribute during parsing, so nothing the page
+ships ever runs — the whole of the 3.6x frame win — while user scripts and
+`evaluate_javascript` keep working. The documentation is explicit: *"executing
+JavaScript is still allowed if enable-javascript is TRUE"* (since 2.24).
+
+Measured on device with the two settings, one page carrying an inline
+`document.title = "SCRIPT-RAN"`:
+
+| | scroll events | page's own script |
+|---|---|---|
+| `enable-javascript=FALSE` | 0 | never ran |
+| `enable-javascript-markup=FALSE` | 3 | never ran |
+| both on | 3 | ran |
+
+The general shape: **a kill switch that is coarser than the feature you meant
+to kill takes your own code down with the page's.** Look for the narrower one.
 
 Related: **initial settings must go through the environment**, not the protocol.
 `ready` is emitted immediately before the first `load_uri`, so anything sent in

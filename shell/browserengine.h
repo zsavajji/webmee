@@ -153,6 +153,8 @@ public slots:
     // one constant rather than hardcoding the same path twice.
     void setDownloadDir(const QString &dir) { m_downloadDir = dir; }
     void cancelDownload(const QString &url);
+    // Raise the page's context menu at a point, in surface device pixels.
+    void requestContextMenu(int x, int y);
     // Download a url the user picked, rather than one a page navigated to.
     void saveLink(const QString &url);
     // An editing key, as an xkb keysym (Backspace 0xFF08, Return 0xFF0D...).

@@ -25,6 +25,18 @@ static const double kMaxViewScale = 3.0;
 // wobble of putting a finger down, and the drag is handed over well before
 // WebKit would have started scrolling anyway.
 static const double kDragSlop = 12.0;
+// How far the finger must leave the press point before a motion is forwarded at
+// all. A finger resting on glass still produces a stream of TouchUpdates, and
+// WPE's TouchGestureController promotes a press to a SCROLL on any motion once
+// 200 ms have passed -- by distance OR by time (scrollCaptureThreshold), so a
+// zero-pixel motion is enough to do it. That kills the long press before it can
+// reach 500 ms. Measured on device: no motion -> long press works; one motion at
+// the very same coordinates -> it never fires.
+static const double kMoveSlop = 8.0;
+// How long the finger must stay down for a long press. The same 500 ms WPE's
+// own TouchGestureController uses, so the shell's idea of a long press and
+// WebKit's cannot disagree.
+static const int kLongPressMs = 500;
 
 namespace {
 
@@ -121,6 +133,7 @@ WebViewItem::WebViewItem(QDeclarativeItem *parent)
     , m_haveTouch(false)
     , m_touchDown(false)
     , m_drag(DragPage)
+    , m_movedEnough(false)
     , m_pinching(false)
     , m_pinchBaseDistance(0.0)
     , m_viewScale(1.0)
@@ -133,6 +146,12 @@ WebViewItem::WebViewItem(QDeclarativeItem *parent)
     // relayouts the page. Showing the keyboard churns this item's height for a
     // moment, so let it settle first: a show-then-hide never reaches the engine
     // and the page does not reflow under the user's finger.
+    // WPE decides a press was long only when the finger LIFTS, so a menu driven
+    // by it cannot appear until release. Time it here instead.
+    m_longPressTimer.setSingleShot(true);
+    m_longPressTimer.setInterval(kLongPressMs);
+    connect(&m_longPressTimer, SIGNAL(timeout()), this, SLOT(longPressElapsed()));
+
     m_resizeTimer.setSingleShot(true);
     m_resizeTimer.setInterval(250);
     connect(&m_resizeTimer, SIGNAL(timeout()), this, SLOT(commitSurfaceSize()));
@@ -261,6 +280,16 @@ void WebViewItem::setSurfaceSize(const QSize &size)
     // the new size. Dropping it here is what produced the glitch.
     m_pendingSurface = true;
     update();
+}
+
+// The press outlasted the threshold without moving. Anything that moves the
+// finger, lifts it, or turns the gesture into a pan stops the timer first, so
+// reaching here means a genuine long press.
+void WebViewItem::longPressElapsed()
+{
+    if (!m_touchDown || m_pinching)
+        return;
+    emit longPressed(int(m_pressSurface.x()), int(m_pressSurface.y()));
 }
 
 void WebViewItem::frameReady()
@@ -709,6 +738,7 @@ void WebViewItem::handleTouch(QTouchEvent *event)
             // scrolling the page underneath the pinch. Only if it ever
             // reached the page: a pan, or a press still being classified,
             // never sent a down, and an unmatched up would read as a click.
+            m_longPressTimer.stop();     // two fingers is a pinch, not a press
             if (m_touchDown) {
                 if (m_drag == DragPage) {
                     const QPointF ua = toSurface(a);
@@ -766,6 +796,7 @@ void WebViewItem::handleTouch(QTouchEvent *event)
     }
 
     if (live.isEmpty()) {
+        m_longPressTimer.stop();
         if (m_touchDown) {
             // A pan was never the page's gesture, so there is nothing to end.
             // Anything else gets its up -- and a press that was still
@@ -790,6 +821,9 @@ void WebViewItem::handleTouch(QTouchEvent *event)
         m_touchDown = true;
         m_touchStart = pos;
         m_panLast = pos;
+        m_movedEnough = false;
+        m_pressSurface = toSurface(pos);
+        m_longPressTimer.start();
         m_drag = (m_viewScale > 1.0) ? DragUndecided : DragPage;
         // Unmagnified there is nothing to decide, so the press goes straight
         // through as it always did. Magnified it is held back: once WebKit has
@@ -805,6 +839,7 @@ void WebViewItem::handleTouch(QTouchEvent *event)
         const QPointF d = pos - m_touchStart;
         if (::hypot(d.x(), d.y()) < kDragSlop)
             return;                             // still finger slop
+        m_longPressTimer.stop();
         if (qAbs(d.x()) > qAbs(d.y())) {
             m_drag = DragPan;
         } else {
@@ -827,6 +862,18 @@ void WebViewItem::handleTouch(QTouchEvent *event)
         panBy(pos.x() - m_panLast.x());
         m_panLast = pos;
         return;
+    }
+
+    // Swallow the jitter of a still finger; see kMoveSlop. Once the finger has
+    // genuinely moved, every motion goes through -- the controller then sees a
+    // delta big enough to start scrolling straight away, so nothing is lost but
+    // the first few pixels.
+    if (!m_movedEnough) {
+        const QPointF d = pos - m_touchStart;
+        if (::hypot(d.x(), d.y()) < kMoveSlop)
+            return;
+        m_movedEnough = true;
+        m_longPressTimer.stop();        // the finger moved: not a long press
     }
 
     const QPointF p = toSurface(pos);

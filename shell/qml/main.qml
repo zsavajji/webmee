@@ -32,9 +32,23 @@ PageStackWindow {
     // a web process per switch, and wedges it. See docs/protocol.md.
     ListModel {
         id: tabModel
-        ListElement { tabUrl: "about:blank"; tabTitle: "New tab" }
+        // tabScroll must be declared here even though it starts at 0: a QML1
+        // ListModel fixes its roles from the first element, and setProperty for
+        // a role that was never declared is silently dropped.
+        ListElement { tabUrl: "about:blank"; tabTitle: "New tab"; tabScroll: 0 }
     }
     property int currentTab: 0      // an index into tabModel
+
+    // How far down the tab we are switching TO was left. Applied once, when
+    // that load finishes -- the page has no height to scroll into before then,
+    // and engine.scrollY is reset to 0 at load commit anyway.
+    property int pendingScroll: 0
+    property int pendingTab: -1     // which row pendingScroll belongs to
+
+    function rememberScroll() {
+        if (currentTab >= 0 && currentTab < tabModel.count)
+            tabModel.setProperty(currentTab, "tabScroll", engine.scrollY);
+    }
 
     // Nothing wrote these back before, so every tab stayed at the url it was
     // created with and switching to one loaded about:blank. The engine is the
@@ -50,10 +64,20 @@ PageStackWindow {
             if (currentTab >= 0 && currentTab < tabModel.count && engine.title !== "")
                 tabModel.setProperty(currentTab, "tabTitle", engine.title);
         }
+        onLoadingChanged: {
+            // pendingTab, not just a flag: switch away again before the
+            // first load finishes and this would otherwise drop one tab's
+            // position into another tab's page.
+            if (!engine.loading && pendingScroll > 0 && pendingTab === currentTab)
+                engine.scrollBy(0, pendingScroll);
+            if (!engine.loading) { pendingScroll = 0; pendingTab = -1; }
+        }
     }
 
     function openTab(url) {
-        tabModel.append({ "tabUrl": url,
+        rememberScroll();
+        pendingScroll = 0; pendingTab = -1;
+        tabModel.append({ "tabScroll": 0, "tabUrl": url,
                           "tabTitle": (url === "" || url === "about:blank")
                                       ? qsTr("New tab") : url });
         currentTab = tabModel.count - 1;
@@ -63,6 +87,10 @@ PageStackWindow {
     function showTab(index) {
         if (index < 0 || index >= tabModel.count || index === currentTab)
             return;
+        // Before currentTab moves, or the position is written to the wrong row.
+        rememberScroll();
+        pendingScroll = tabModel.get(index).tabScroll;
+        pendingTab = index;
         currentTab = index;
         // currentTab first: load() reports the url straight back, and the sync
         // above must write it to the row being switched TO.

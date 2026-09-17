@@ -7,6 +7,8 @@
 // makes a sideways drag click whatever link it started on.
 #include <QApplication>
 #include <QGraphicsScene>
+#include <QEventLoop>
+#include <QTimer>
 #include <QTouchEvent>
 #include <QStringList>
 #include <cstdio>
@@ -19,11 +21,22 @@ public:
 };
 
 static QStringList g_log;
+static int g_longPress = 0;
+static QPoint g_longPressAt;
+
+// The long press is a real QTimer, so the loop has to actually run.
+static void wait(int ms)
+{
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, SLOT(quit()));
+    loop.exec();
+}
 class Recorder : public QObject {
     Q_OBJECT
 public slots:
     void onTouched(const QString &kind, int, int x, int y)
     { g_log << QString("%1 %2,%3").arg(kind).arg(x).arg(y); }
+    void onLongPressed(int x, int y) { ++g_longPress; g_longPressAt = QPoint(x, y); }
 };
 #include "gesturetest.moc"
 
@@ -110,6 +123,8 @@ int main(int argc, char **argv)
     Recorder rec;
     QObject::connect(item, SIGNAL(touched(QString,int,int,int)),
                      &rec, SLOT(onTouched(QString,int,int,int)));
+    QObject::connect(item, SIGNAL(longPressed(int,int)),
+                     &rec, SLOT(onLongPressed(int,int)));
 
     // --- unmagnified: unchanged behaviour --------------------------------
     g_log.clear();
@@ -188,6 +203,77 @@ int main(int argc, char **argv)
        g_log.size() == 2 && g_log.at(0).startsWith("down")
                          && g_log.at(1).startsWith("up") ? "click" : g_log.join(" "),
        "click");
+
+    // --- the long press fires while the finger is still DOWN ----------------
+    // WPE only decides a press was long when the finger lifts, so the menu
+    // could not appear until release. The shell times it instead.
+    {
+        g_longPress = 0;
+        QList<QTouchEvent::TouchPoint> p;
+        p << pt(0, QPointF(200, 300), Qt::TouchPointPressed);
+        send(item, QEvent::TouchBegin, p);
+        wait(200);
+        is("nothing yet at 200 ms", QString::number(g_longPress), "0");
+        wait(450);
+        is("fires while the finger is still down", QString::number(g_longPress), "1");
+        p.clear(); p << pt(0, QPointF(200, 300), Qt::TouchPointReleased);
+        send(item, QEvent::TouchEnd, p);
+    }
+
+    // A press that turns into a drag is not a long press.
+    {
+        g_longPress = 0;
+        QList<QTouchEvent::TouchPoint> p;
+        p << pt(0, QPointF(200, 300), Qt::TouchPointPressed);
+        send(item, QEvent::TouchBegin, p);
+        wait(150);
+        p.clear(); p << pt(0, QPointF(200, 220), Qt::TouchPointMoved);
+        send(item, QEvent::TouchUpdate, p);
+        wait(500);
+        is("a drag cancels it", QString::number(g_longPress), "0");
+        p.clear(); p << pt(0, QPointF(200, 220), Qt::TouchPointReleased);
+        send(item, QEvent::TouchEnd, p);
+    }
+
+    // Lifting early is a tap, not a long press.
+    {
+        g_longPress = 0;
+        tap(item, QPointF(200, 300));
+        wait(600);
+        is("a quick tap does not become one", QString::number(g_longPress), "0");
+    }
+
+    // --- a still finger must send NO motion ---------------------------------
+    // WPE promotes a press to a scroll on any motion after 200 ms, by time and
+    // not just distance, so forwarding the jitter of a resting finger destroys
+    // the long press. Measured on device before this was added.
+    {
+        g_log.clear();
+        QList<QTouchEvent::TouchPoint> p;
+        p << pt(0, QPointF(200, 300), Qt::TouchPointPressed);
+        send(item, QEvent::TouchBegin, p);
+        for (int i = 0; i < 5; ++i) {          // resting, a pixel of wobble
+            p.clear(); p << pt(0, QPointF(200 + (i % 2), 300), Qt::TouchPointMoved);
+            send(item, QEvent::TouchUpdate, p);
+        }
+        p.clear(); p << pt(0, QPointF(200, 300), Qt::TouchPointReleased);
+        send(item, QEvent::TouchEnd, p);
+        // The shape, not the coordinates: this item is still magnified from the
+        // pinch tests above, so toSurface maps them somewhere else entirely.
+        QString kinds;
+        for (int i = 0; i < g_log.size(); ++i)
+            kinds += g_log.at(i).section(' ', 0, 0) + " ";
+        is("a resting finger sends press and release only", kinds.trimmed(), "down up");
+    }
+
+    {
+        g_log.clear();
+        drag(item, QPointF(200, 400), QPointF(200, 200), 6);
+        bool anyMotion = false;
+        for (int i = 0; i < g_log.size(); ++i)
+            if (g_log.at(i).startsWith("motion")) anyMotion = true;
+        is("a real drag still sends motion", anyMotion ? "yes" : "no", "yes");
+    }
 
     // --- the ghost frame ---------------------------------------------------
     // paint() refuses to draw until a frame has arrived, because an unpainted

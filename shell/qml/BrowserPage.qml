@@ -842,8 +842,14 @@ Page {
 
     Connections {
         target: engine
-        onLinkLongPressed: { linkMenu.url = url; linkMenu.open() }
-        onImageLongPressed: { imageMenu.url = url; imageMenu.open() }
+        // The shell raises the menu on a timer, so it appears while the finger
+        // is still down. WPE then raises its OWN on release -- its gesture
+        // controller only decides a press was long once the finger lifts -- so
+        // a second event arrives for the same press. Ignore anything that comes
+        // in while a menu or dialog is already up, which covers both that and a
+        // menu trying to open over the auth prompt.
+        onLinkLongPressed: if (!page.modalUp) { linkMenu.url = url; linkMenu.open() }
+        onImageLongPressed: if (!page.modalUp) { imageMenu.url = url; imageMenu.open() }
         // The Downloads page is where progress lives; this is just so a
         // transfer that starts from a menu is not silent.
         onDownloadFinished: { linkBanner.text = qsTr("Download finished"); linkBanner.show() }

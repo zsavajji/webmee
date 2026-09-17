@@ -168,6 +168,8 @@ Q_DECL_EXPORT int main(int argc, char **argv)   // Q_DECL_EXPORT: applauncherd d
         QObject::connect(&engine, SIGNAL(webProcessCrashed()), page, SLOT(pageCrashed()));
         QObject::connect(page, SIGNAL(touched(QString,int,int,int)),
                          &engine, SLOT(sendTouch(QString,int,int,int)));
+        QObject::connect(page, SIGNAL(longPressed(int,int)),
+                         &engine, SLOT(requestContextMenu(int,int)));
         QObject::connect(page, SIGNAL(scaleRequested(double)),
                          &engine, SLOT(setSurfaceScale(double)));
         QObject::connect(&engine, SIGNAL(surfaceResized(QSize)),
