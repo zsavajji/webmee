@@ -1,0 +1,79 @@
+# Everything here is BUILD OUTPUT: reproducible from the sources and the
+# scripts in deps/, and far too big to version. These directories were tracked
+# until the history was rewritten to drop them -- 90,588 of ~90,700 tracked
+# files were artifacts, and .git was 1013 MB against a few hundred KB of source.
+
+# --- cross-build trees ------------------------------------------------------
+# build/        unpacked dependency sources + their object trees (WebKit, ICU,
+#               glib, cairo...), populated by deps/*.sh
+# build-wpe/    the WebKit cmake/ninja build directory
+# build-shell/  the Qt shell's qmake build (mad qmake && mad make)
+# build-*/      anything else built the same way, incl. build-hosttest/ from
+#               test/host/run.sh
+# A directory-only pattern on purpose: a bare *build* would also swallow
+# docs/building.md and deps/build-webkit.sh, which then never show as untracked.
+*build*/
+
+# --- staged and packaged output ---------------------------------------------
+# out/arm/stage    ninja install DESTDIR for the whole dependency stack
+# out/arm/sysroot  cross sysroot the backend and engine link against
+# out/arm/pkg      the on-device tree deploy.sh assembles
+# out/arm/webmee   the .deb payload package.sh builds (named for the package:
+#                  gendigsigsums takes the package name from the directory)
+# out/*.deb        the installable package itself, ~50 MB
+out/
+
+# --- host toolchain ---------------------------------------------------------
+# meson and ninja live here; deps/toolchain.sh puts it on PATH.
+.venv/
+
+# --- compiled and generated -------------------------------------------------
+*.o
+*.a
+*.so
+*.so.*
+*.lo
+*.la
+*.slo
+*.lai
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.moc
+*.qmlc
+*.jsc
+*.qm
+*.prl
+Makefile*
+object_script.*.Release
+object_script.*.Debug
+*_plugin_import.cpp
+.qmake.cache
+.qmake.stash
+
+# --- packages and archives --------------------------------------------------
+*.deb
+*.changes
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.zip
+
+# --- device probe output ----------------------------------------------------
+# Probe runs write their captures next to the scripts; the scripts are source,
+# the captures are not.
+*.out
+*.err
+*.ppm
+
+# --- editor and OS ----------------------------------------------------------
+*.pro.user
+*.pro.user.*
+*.qbs.user
+*.qbs.user.*
+CMakeLists.txt.user*
+*creator.user*
+*.autosave
+compile_commands.json
+.DS_Store
