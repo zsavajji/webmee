@@ -47,10 +47,12 @@ Two things had to be got right there, and the first hid the second:
    re-acquires it: the ghost then never clears, and the page never reappears.
 
 Fixing (1) alone changes nothing whenever the id repeats, because the early
-return sits above it. New windows arrive on every cross-site navigation, since
-WebKit starts a new web process for one — see
-[process-swap.md](process-swap.md) — which is why this shows up a few links in
-and never on the first page.
+return sits above it. This showed up a few links in and never on the first page,
+because at the time WebKit started a new web process — and so a new window — on
+every cross-site navigation. That is patched off now (see
+[process-swap.md](process-swap.md)), so new windows are rare: a web process
+crash and restart is the remaining way to get one. The handling still has to be
+right, and it is now much harder to stumble into by browsing.
 
 **Every pixmap rejected, black page.** The logical size is device ÷ scale
 *rounded*, so the surface WebKit produces can be a pixel off what either side
@@ -176,8 +178,10 @@ and `enabled` does not affect painting, so the page still renders behind it.
 **The browser pauses for tens of seconds every few links, then recovers.** Not
 overload and not the memory watcher: WebKit starts a web process per cross-site
 navigation and four end up alive at once. Count `WPEWebProcess` before blaming
-anything else. Open bug, with the measurements and the dead ends in
-[process-swap.md](process-swap.md).
+anything else. Fixed by patching process-swap off in
+`deps/build-webkit.sh` — if it comes back, check that patch survived a WebKit
+re-unpack before looking anywhere else. The measurements and the three closed
+runtime routes are in [process-swap.md](process-swap.md).
 
 **`grep -c "literal" <binary>` on the BUILD HOST silently matches nothing.** The
 busybox substitute for `strings` works on device and misleads here — GNU grep
@@ -440,6 +444,16 @@ keyboard delivers Enter as a committed `"\n"`, not as a key event, so it
 arrived on the `text` path — where it was being replaced with a space, silently
 changing what was typed. Split on newlines and send `key 65293` instead: a page
 can only act on Return if Return actually happens.
+
+**The space bar does nothing in a page, everywhere, while it works in the
+address bar.** The address bar is a plain Qt field and never touches the
+protocol; a page's text goes over it one keystroke at a time, so a space is sent
+alone as the line `text␣␣`. The engine chomped that line with `g_strchomp()`,
+which strips *all* trailing whitespace and not just the terminator, leaving
+`"text"` — which then matched no command and was dropped without a trace line,
+because the trace prints the command it is about to run. Strip the terminator
+only. The general shape: **the last field of this protocol is allowed to be a
+space, so nothing on the wire may be whitespace-trimmed.**
 
 **The keyboard lags and re-capitalises after every letter.** Both from the same
 line: clearing the capture field's `text` after each keystroke. Setting `text`

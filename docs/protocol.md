@@ -8,6 +8,12 @@ UTF-8, `\n`-terminated, no escaping: every message has a fixed arity and the
 last field may contain spaces. The shell keeps any trailing partial line for the
 next read (`BrowserEngine::onEngineOutput`).
 
+**A line may end in a space, and both sides must preserve it.** `text ` carrying
+a single space is how the space bar reaches a page — the shell sends one
+keystroke at a time — so neither end may trim a line, only strip its terminator.
+`g_strchomp()` is the wrong tool and cost every space in the browser once; see
+[gotchas.md](gotchas.md).
+
 ## Commands (shell → engine)
 
 | command | meaning |

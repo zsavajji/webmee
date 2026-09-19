@@ -11,7 +11,7 @@
 # compression".
 set -eu
 ROOT=$(cd "$(dirname "$0")" && pwd)
-VERSION="${VERSION:-0.3.0}"
+VERSION="${VERSION:-0.3.1}"
 ARCH=armel
 DEB="$ROOT/out/arm/webmee"   # last component is the package name: gendigsigsums reads it
 OUT="$ROOT/out/WebMee_${VERSION}_${ARCH}.deb"

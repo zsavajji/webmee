@@ -399,7 +399,9 @@ void BrowserEngine::onEngineFinished(int code, QProcess::ExitStatus status)
 
 // name -> query template, %1 replaced by the percent-encoded terms.
 static const char *kSearchEngines[][2] = {
-    { "DuckDuckGo", "https://duckduckgo.com/?q=%1" },
+    // The html/ endpoint, not duckduckgo.com: the main site renders nothing
+    // without scripts, and JavaScript is off by default here.
+    { "DuckDuckGo", "https://html.duckduckgo.com/html/?q=%1" },
     { "Google",     "https://www.google.com/search?q=%1" },
     { "Bing",       "https://www.bing.com/search?q=%1" },
     { "Wikipedia",  "https://en.m.wikipedia.org/w/index.php?search=%1" },
@@ -437,7 +439,9 @@ bool BrowserEngine::looksLikeUrl(const QString &text) const
 
 QString BrowserEngine::searchUrlFor(const QString &terms) const
 {
-    QString tmpl = "https://duckduckgo.com/?q=%1";
+    // Fall back to the first entry rather than repeating its url here; a second
+    // copy is a second thing to forget to change.
+    QString tmpl = QString::fromLatin1(kSearchEngines[0][1]);
     for (int i = 0; kSearchEngines[i][0]; ++i) {
         if (m_searchEngine == QString::fromLatin1(kSearchEngines[i][0])) {
             tmpl = QString::fromLatin1(kSearchEngines[i][1]);

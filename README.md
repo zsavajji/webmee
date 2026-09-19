@@ -31,7 +31,7 @@ QtWebKit 2.2 cannot.
 | [docs/debugging.md](docs/debugging.md) | Probes, crash capture without gdb, the host-side test suite, and the env vars that make the app testable |
 | [docs/performance.md](docs/performance.md) | What was measured, what helped, what did not, and the harnesses to resume with |
 | [docs/qml-components.md](docs/qml-components.md) | Which QML types actually exist on the device, probed rather than assumed |
-| [docs/process-swap.md](docs/process-swap.md) | **Open bug.** The browser stalls every few links: a web process per cross-site navigation, measured, with every cheap fix ruled out |
+| [docs/process-swap.md](docs/process-swap.md) | Why the browser used to stall every few links — a web process per cross-site navigation — and the one-line WebKit patch that fixed it, with every cheaper route ruled out first |
 | [docs/gotchas.md](docs/gotchas.md) | Catalogue of everything that cost real time, with the evidence |
 
 ## Layout

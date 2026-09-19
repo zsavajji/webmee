@@ -427,16 +427,18 @@ index rather than emptying it.
   budget. The switcher shows titles and addresses; there are no thumbnails.
   Parking each tab's `WebKitWebViewSessionState` was tried and reverted — see
   [protocol.md](protocol.md).
-- **The browser stalls for tens of seconds every few cross-site navigations, and
-  can lose one entirely.** A web process per navigation, four alive at once
-  against ~100 MB free. Measured, diagnosed, and not fixed: every runtime knob
-  is closed and the remaining fix is a WebKit patch. See
+- Every site now renders in **one** web process. Process-swap-on-navigation is
+  patched off (`deps/build-webkit.sh`) because four live web processes against
+  ~100 MB free stalled the browser for tens of seconds every few links and lost
+  navigations outright. That buys back the memory and costs the site isolation
+  process-swap exists to provide — a deliberate trade, not a side effect. See
   [process-swap.md](process-swap.md).
 - Password UI for HTML FORM logins (offer-to-save, fill-on-navigate) is not
   wired. HTTP authentication does use the store -- see [protocol.md](protocol.md).
 - No AIA fetching, so a server that omits an intermediate certificate fails
   where desktop browsers recover.
-- Downloads are modelled but not driven by the engine.
+- Images saved to `Downloads` do not appear in the Gallery: nothing tells
+  Tracker about them.
 - `zoom` (page zoom) remains in the protocol but nothing drives it; pinch uses
   `scale` instead.
 - **Scrolling inside a page element that consumes touch does not work** (cookie

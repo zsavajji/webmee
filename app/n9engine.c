@@ -978,7 +978,14 @@ static gboolean on_stdin(GIOChannel *ch, GIOCondition cond, gpointer d)
     char *line = NULL;
     gsize len = 0;
     while (g_io_channel_read_line(ch, &line, &len, NULL, NULL) == G_IO_STATUS_NORMAL && line) {
-        g_strchomp(line);
+        /* Strip the line TERMINATOR only. g_strchomp() takes every trailing
+           space with it, and the last field of this protocol is allowed to be
+           or to end in one: a space typed into a page is sent on its own as
+           "text  ", which chomped down to "text" and matched no command at
+           all. Every space was dropped, silently. */
+        gsize n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+            line[--n] = '\0';
         handle_command(line);
         g_free(line);
         line = NULL;
