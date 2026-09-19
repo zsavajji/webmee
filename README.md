@@ -33,6 +33,7 @@ QtWebKit 2.2 cannot.
 | [docs/qml-components.md](docs/qml-components.md) | Which QML types actually exist on the device, probed rather than assumed |
 | [docs/process-swap.md](docs/process-swap.md) | Why the browser used to stall every few links — a web process per cross-site navigation — and the one-line WebKit patch that fixed it, with every cheaper route ruled out first |
 | [docs/gotchas.md](docs/gotchas.md) | Catalogue of everything that cost real time, with the evidence |
+| [docs/perf-plan.md](docs/perf-plan.md) | Agent brief for the next round of RAM and speed work: harness first, then measured changes in order |
 
 ## Layout
 
