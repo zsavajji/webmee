@@ -397,6 +397,8 @@ Set by `BrowserEngine::startEngine()`.
 | `SSL_CERT_FILE` | OpenSSL's `openssldir` is inside our tree, and the device's 2011 CA store predates most roots in use today. |
 | `FONTCONFIG_FILE` | Our fonts.conf, not the device's. |
 | `N9_VIEW_RECT`, `N9_LAYOUT_WIDTH` | Initial geometry and the CSS width to lay out to (default 320). |
+| `N9_DUMP_FEATURES` | Print every feature `webkit_settings_get_all_features()` exposes to stderr at startup. The output is `docs/features.txt`. |
+| `N9_FEATURES` | `"Name=1,Other=0"`, applied before the first load. Reports a name it cannot find, and reports a value that equals the default -- both are silent no-ops otherwise, and both have wasted a build here before. |
 | `N9_NO_BLOCKER` | Initial content-blocker state, same value-not-presence rule as the two below. Needed for the same reason: a filter added in reply to `ready` lands after `load_uri`, so the first page of every launch would be unfiltered. |
 | `N9_BLOCKLIST` | Path to the ruleset JSON, overriding the shipped one. This is how the blocker is tested without root, since `/opt` is not writable after a package install. |
 | `N9_NO_JS`, `N9_NO_IMAGES` | Initial content settings, applied before the first load. Sent on **every** launch carrying the persisted value, `1` or `0` — the engine tests the value, not presence, so it can be told "on" as well as "off". `N9_NO_JS=0` is the way to force JavaScript on for a measurement, since it now defaults off. |

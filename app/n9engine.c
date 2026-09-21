@@ -606,6 +606,75 @@ static unsigned layout_width(void)
     return v ? v : (unsigned) N9_LAYOUT_WIDTH;
 }
 
+/*
+ * Feature flags.
+ *
+ * webkit_settings_get_all_features() is the ONLY list that counts. A feature
+ * identifier being present in the shipped library proves nothing: the
+ * process-swap preference is in there as a string and is not a feature, because
+ * only preferences with a WebCore binding are exposed here. That cost a build
+ * and an install to learn, so anything not in the enumerated list is reported
+ * loudly rather than silently doing nothing.
+ */
+static WebKitFeature *find_feature(WebKitFeatureList *list, const char *id)
+{
+    gsize n = webkit_feature_list_get_length(list);
+    for (gsize i = 0; i < n; i++) {
+        WebKitFeature *f = webkit_feature_list_get(list, i);
+        if (!g_strcmp0(webkit_feature_get_identifier(f), id))
+            return f;
+    }
+    return NULL;
+}
+
+/* N9_DUMP_FEATURES=1: print what this build actually exposes, once, and exit
+   the question of what exists. Committed as docs/features.txt. */
+static void dump_features(WebKitSettings *st)
+{
+    WebKitFeatureList *list = webkit_settings_get_all_features();
+    gsize n = webkit_feature_list_get_length(list);
+    fprintf(stderr, "[features] count %u\n", (unsigned) n);
+    for (gsize i = 0; i < n; i++) {
+        WebKitFeature *f = webkit_feature_list_get(list, i);
+        fprintf(stderr, "[feature] %-54s status=%d default=%d now=%d category=%s\n",
+                webkit_feature_get_identifier(f),
+                (int) webkit_feature_get_status(f),
+                webkit_feature_get_default_value(f) ? 1 : 0,
+                webkit_settings_get_feature_enabled(st, f) ? 1 : 0,
+                webkit_feature_get_category(f) ? webkit_feature_get_category(f) : "");
+    }
+    webkit_feature_list_unref(list);
+}
+
+/* N9_FEATURES="Name=1,Other=0" -- one knob for every feature A/B, so trying
+   the next one costs a run rather than a rebuild and an install. */
+static void apply_feature_overrides(WebKitSettings *st)
+{
+    const char *spec = getenv("N9_FEATURES");
+    if (!spec || !*spec) return;
+    WebKitFeatureList *list = webkit_settings_get_all_features();
+    char **items = g_strsplit(spec, ",", -1);
+    for (int i = 0; items[i]; i++) {
+        if (!*items[i]) continue;
+        char **kv = g_strsplit(items[i], "=", 2);
+        char *id = g_strstrip(kv[0]);
+        gboolean on = kv[1] && atoi(g_strstrip(kv[1])) != 0;
+        WebKitFeature *f = find_feature(list, id);
+        if (!f)
+            fprintf(stderr, "[n9engine] feature %s NOT FOUND -- not applied\n", id);
+        else {
+            gboolean def = webkit_feature_get_default_value(f);
+            webkit_settings_set_feature_enabled(st, f, on);
+            fprintf(stderr, "[n9engine] feature %s = %d (default %d)%s\n",
+                    id, on ? 1 : 0, def ? 1 : 0,
+                    (!!on == !!def) ? " -- SAME AS DEFAULT, this arm changes nothing" : "");
+        }
+        g_strfreev(kv);
+    }
+    g_strfreev(items);
+    webkit_feature_list_unref(list);
+}
+
 /* Presence is NOT the test. The shell passes these on every launch, so it must
    be able to say "on" as well as "off" -- and an inherited N9_NO_JS=0, which
    reads to everyone as "do not disable", would otherwise disable. */
@@ -1359,6 +1428,10 @@ int main(int argc, char *argv[])
             webkit_settings_set_auto_load_images(st, FALSE);
             fprintf(stderr, "[n9engine] images disabled\n");
         }
+        if (env_flag("N9_DUMP_FEATURES"))
+            dump_features(st);
+        /* Before the first load, like every other initial setting. */
+        apply_feature_overrides(st);
     }
 
     GIOChannel *in = g_io_channel_unix_new(0);

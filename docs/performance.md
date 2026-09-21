@@ -231,6 +231,60 @@ Verified on device, all four paths, since a setting is only real if it arrives:
 | `N9_NO_BLOCKER=1` | `set blocker 1` | refused |
 | `N9_NO_BLOCKER=0` | `set blocker 0` | LOADED |
 
+## Phase 2.2 feature knobs: nothing to A/B, and why
+
+The full list this build exposes is now `docs/features.txt` (367 features),
+dumped from the device with `N9_DUMP_FEATURES=1`. Any feature can be set with
+`N9_FEATURES="Name=1,Other=0"` without a rebuild.
+
+**Every feature name the plan gave is wrong**, and the four that exist do so
+without the `Enabled` suffix:
+
+| plan's name | reality |
+|---|---|
+| `AsyncFrameScrollingEnabled` | `AsyncFrameScrolling`, **default 1, already on** |
+| `DOMTimersThrottlingEnabled` | `DOMTimersThrottling`, **default 1, already on** |
+| `RequestAnimationFrameEnabled` | not a runtime feature here |
+| `WebAnimationsEnabled` | not a runtime feature here |
+| IntersectionObserver | not a runtime feature here |
+
+`AsyncFrameScrolling` was the plan's highest-expected-value item, on the theory
+that the compositor could scroll already-rendered tiles while JavaScript holds
+the main thread. **It is already enabled by default**, as are
+`ThreadedScrolling` and `AsyncOverflowScrolling`. There is no headroom there:
+whatever the JS-on frame cost is, it is being paid *with* async scrolling
+already on.
+
+The only throttling features that are off are the `HiddenPage*` ones
+(`HiddenPageDOMTimerThrottling`, `HiddenPageCSSAnimationSuspension`). This
+browser has a single web view and the page is always the visible one, so they
+would never fire. Not worth a run.
+
+**So 2.2 produced no A/B**, which is the correct outcome of "A/B only what is
+present": what is present is already in the state the plan wanted it in. The
+list and the knob are the deliverable, and they make the next such experiment
+cost a run rather than a rebuild.
+
+Two findings fell out of the dump:
+
+- **`ServiceWorkers` is a runtime feature** (default on), so Phase 3.1's
+  `-DENABLE_SERVICE_WORKER=OFF` is doubly unnecessary -- that cmake option does
+  not exist in 2.44 (zero hits in `Source/cmake`), and the thing it wanted is
+  reachable at runtime anyway.
+- **Phase 1.4 is answered: no second web process.** `webprocs=1` in 43 of 43
+  runs across every page measured, JavaScript on and off, including live
+  GitHub. Nothing here spawns the extra `WPEWebProcess` the plan budgeted for,
+  so turning service workers off would not save one.
+
+The override reports both failure modes rather than doing nothing quietly,
+which is the whole point after the process-swap episode:
+
+```
+[n9engine] feature AsyncFrameScrollingEnabled NOT FOUND -- not applied
+[n9engine] feature AsyncFrameScrolling = 1 (default 1) -- SAME AS DEFAULT, this arm changes nothing
+[n9engine] feature LinkPreload = 0 (default 1)
+```
+
 ## Render scale: user-switchable, effect unmeasured
 
 Settings → Rendering → **Fast** (1.0x, default) / **Sharp** (1.5x). The layout is
