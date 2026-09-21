@@ -25,7 +25,7 @@ ssh "$HOST" 'chmod +x /home/user/bench.sh'
 # here: it hands off to an already-running instance and silently measures the
 # installed build instead.
 one_run() {
-    ssh "$HOST" "N9_ENGINE='${N9_ENGINE:-}' N9_BLOCKLIST='${N9_BLOCKLIST:-}' DISPLAY=:0 sh /home/user/bench.sh '$URL' $1 '$LABEL'" \
+    ssh "$HOST" "N9_ENGINE='${N9_ENGINE:-}' N9_BLOCKLIST='${N9_BLOCKLIST:-}' WEBKIT_RAM_SIZE_MB='${WEBKIT_RAM_SIZE_MB:-}' DISPLAY=:0 sh /home/user/bench.sh '$URL' $1 '$LABEL'" \
         2>>/tmp/bench-$LABEL.err
 }
 

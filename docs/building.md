@@ -32,6 +32,18 @@ deps/check-deps.sh       # audit: PIC, shared/static policy, one GType registry
 `deps/build-webkit.sh` only runs `cmake`. The compile is a separate `ninja`
 step. That is easy to miss and looks like "the build finished in 20 seconds".
 
+**`ninja` is not on `PATH`** -- it is in `.venv/bin`. Invoking it bare fails
+with "command not found", and if that is inside a pipeline (`ninja ... | tail`)
+the exit status belongs to the pipeline's last command, so the build looks like
+it succeeded and nothing was compiled.
+
+**`DESTDIR` must be ABSOLUTE.** `ninja -C build-wpe` changes directory, so a
+relative `DESTDIR=out/arm/stage` installs into
+`build-wpe/out/arm/stage/...` while printing exactly the `-- Installing:` lines
+you expect. The staged tree then silently keeps the previous build, which
+presents as "my patch is not in the artifact" long after the build was fine.
+Use `DESTDIR=$PWD/out/arm/stage`.
+
 ## Traps in the build system itself
 
 **`deps/toolchain.sh` derives `$ROOT` from `$0`.** Sourcing it from a script

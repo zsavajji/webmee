@@ -285,6 +285,68 @@ which is the whole point after the process-swap episode:
 [n9engine] feature LinkPreload = 0 (default 1)
 ```
 
+## Applied: WebKit build options (3.1) -- measured, and nearly worthless
+
+`-DENABLE_REMOTE_INSPECTOR=OFF -DENABLE_GEOLOCATION=OFF`, on top of
+`OFFSCREEN_CANVAS` and `GPU_PROCESS` which were already off.
+
+| | stripped `libWPEWebKit-2.0.so` |
+|---|---|
+| before | 63,975,084 |
+| after | 63,843,756 |
+| | **-131,328 bytes (-0.21%)** |
+
+The installed tree stays 102 MB and the `.deb` stays 50 MB. **This was not
+worth a rebuild**, and the next person should not repeat it expecting more.
+
+Three of the plan's five options do not exist or do not work:
+
+- `ENABLE_SERVICE_WORKER`, `ENABLE_INDEXED_DATABASE` -- **not cmake options in
+  2.44** (zero hits in `Source/cmake`). cmake accepts an unknown `-D` silently,
+  so both would have looked applied and done nothing. Service workers are a
+  *runtime* feature instead (`docs/features.txt`).
+- `ENABLE_NOTIFICATIONS=OFF` -- **fails the build.** `PlatformEnable.h:941`
+  asserts `NOTIFICATION_EVENT` requires `NOTIFICATIONS`, and
+  `PlatformEnableGlib.h:47` hardcodes `ENABLE_NOTIFICATION_EVENT 1` for every
+  GLib port with no option to turn it off. It needs a source patch.
+
+And the prize that looked available is not: **the inspector's bulk is not in
+that library.** `libWPEWebInspectorResources.so` is 1.37 MB and is still built
+and shipped with `REMOTE_INSPECTOR=OFF`, because
+`PlatformWPE.cmake:527` adds that target unconditionally -- no option guards
+it. Dropping it means a source patch or not shipping the file, and whether
+anything still `dlopen`s it is unverified.
+
+Cost: 1696 edges, about 40 minutes. Two cmake traps on the way, both now in
+[building.md](building.md): a stale `ENABLE_NOTIFICATIONS=OFF` survived in
+`CMakeCache.txt` after being removed from the script, and a **relative
+`DESTDIR` installs into the build directory** while printing the install lines
+you expect.
+
+## Applied: WEBKIT_RAM_SIZE_MB (3.2) -- built, NOT yet measured
+
+`WTF::ramSize()` now honours `WEBKIT_RAM_SIZE_MB`
+(`patch_ram_size` in `deps/build-webkit.sh`), and the engine sets it to 256
+with `overwrite=0` so either arm can be selected from the environment.
+
+Patched in **`ramSize()`, not `computeRAMSize()`'s Linux branch** as the plan
+said: this build has `USE_SYSTEM_MALLOC 0`, so that branch is `#if`'d out
+entirely and the function returns `bmalloc::api::availableMemory()`. Patching
+where the plan pointed would have compiled, installed and changed nothing.
+`ramSize()` is the one funnel every caller passes through.
+
+Verified in the artifact (`strings -a | grep -c WEBKIT_RAM_SIZE_MB` = 1 on the
+stripped library), not in the source tree.
+
+What it should move, from `Shared/CacheModel.cpp` read at 985 MB versus 256 MB:
+memory cache 16 MB -> 8 MB, back/forward cache 2 documents -> 1, plus JSC heap
+growth and the memory-kill thresholds.
+
+**No numbers yet.** `DT_RPATH=/opt/n9browser/lib` is searched before
+`LD_LIBRARY_PATH`, so a rebuilt library cannot be tested from `/home/user` --
+this one needs the `.deb` installed, which needs root. Measure with
+`WEBKIT_RAM_SIZE_MB=985` against `=256` on the same page, `VmHWM` and frames.
+
 ## Render scale: user-switchable, effect unmeasured
 
 Settings → Rendering → **Fast** (1.0x, default) / **Sharp** (1.5x). The layout is

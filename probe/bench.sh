@@ -96,6 +96,7 @@ env LD_LIBRARY_PATH="$PREFIX/lib" \
     DISPLAY="${DISPLAY:-:0}" \
     N9_NO_JS="$([ "$JS" = 1 ] && echo 0 || echo 1)" \
     N9_BLOCKLIST="${N9_BLOCKLIST:-}" \
+    WEBKIT_RAM_SIZE_MB="${WEBKIT_RAM_SIZE_MB:-}" \
     "$ENGINE" about:blank < "$FIFO" > "$OUT" 2> "$ERR" &
 EPID=$!
 # Hold the write end open ourselves, or the engine sees EOF on stdin the moment
@@ -204,7 +205,7 @@ esac
 # Print the configuration the engine ACTUALLY used, not the one we asked for.
 # An early render-scale A/B set a variable only the backend reads while the
 # engine had it as a #define, and both arms measured the same thing.
-grep -E 'javascript|memory limit|surface|cache dir|content blocker' "$ERR" >&2
+grep -E 'javascript|memory limit|surface|cache dir|content blocker|RAM_SIZE' "$ERR" >&2
 
 cleanup
 # cleanup ends in a kill of a process that has usually already quit, so its

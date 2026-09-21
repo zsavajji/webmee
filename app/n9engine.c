@@ -1233,6 +1233,29 @@ int main(int argc, char *argv[])
      */
     setenv("JSC_useConcurrentJIT", "false", 0);
 
+    /*
+     * Tell WebKit how much RAM to believe in.
+     *
+     * The device reports 985 MB and has ~150 MB free, and everything
+     * RAM-proportional sizes itself off the 985: JSC heap growth, the memory
+     * cache, the back/forward cache count, the memory-kill thresholds. At
+     * 985 MB, Shared/CacheModel.cpp gives a 16 MB memory cache and TWO bfcache
+     * documents; at 256 it gives 8 MB and one.
+     *
+     * Needs the WTF::ramSize() patch in deps/build-webkit.sh to have any
+     * effect -- without it this variable is simply unread, which is the
+     * failure mode to check first if the numbers do not move.
+     *
+     * Set HERE rather than only in BrowserEngine::startEngine, because the
+     * measurement harness drives this binary directly with no shell, and a
+     * knob the harness cannot see is a knob that cannot be A/B'd. overwrite=0,
+     * so an external value still wins -- which is how the two arms are run.
+     * The auxiliary processes inherit it.
+     */
+    setenv("WEBKIT_RAM_SIZE_MB", "256", 0);
+    fprintf(stderr, "[n9engine] WEBKIT_RAM_SIZE_MB=%s\n",
+            getenv("WEBKIT_RAM_SIZE_MB"));
+
     /* The NETWORK process. Despite the generic-sounding name this call reaches
        only that one: the docs are explicit that "the periodic check for used
        memory is disabled by default on network processes". */

@@ -210,6 +210,76 @@ PYEOF
 
 patch_disable_process_swap
 
+# Let the environment override the RAM size WebKit sizes itself from.
+#
+# The device reports 985 MB and has ~150 MB free, and everything RAM-proportional
+# believes the 985: JSC heap growth, the memory cache, the back/forward cache
+# count, the memory-kill thresholds. At 985 MB CacheModel.cpp gives a 16 MB
+# memory cache and TWO bfcache documents; at 256 it gives 8 MB and one.
+#
+# Patched in ramSize(), NOT in computeRAMSize()'s Linux branch as first planned:
+# this build has USE_SYSTEM_MALLOC 0, so that branch is #if'd out entirely and
+# computeRAMSize() returns bmalloc::api::availableMemory(). Patching the branch
+# would have compiled, installed and done nothing. ramSize() is the single
+# funnel every caller goes through.
+patch_ram_size() {
+    python3 - "$SRC" <<'PYEOF'
+import sys, os
+src = sys.argv[1]
+p = os.path.join(src, "Source/WTF/wtf/RAMSize.cpp")
+t = open(p).read()
+if "n9: WEBKIT_RAM_SIZE_MB" in t:
+    raise SystemExit(0)          # already patched
+
+old = """size_t ramSize()
+{
+    static size_t ramSize;
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, [] {
+        ramSize = computeRAMSize();
+    });
+    return ramSize;
+}"""
+if old not in t:
+    raise SystemExit("ramSize patch site not found; check RAMSize.cpp")
+
+new = """size_t ramSize()
+{
+    static size_t ramSize;
+    static std::once_flag onceFlag;
+    std::call_once(onceFlag, [] {
+        // n9: WEBKIT_RAM_SIZE_MB overrides the perceived RAM size. The N9
+        // reports 985 MB and has ~150 MB of it free, so every RAM-proportional
+        // default here is sized for memory that does not exist. This is the
+        // source-level equivalent of JSC_forceRAMSize, except that it also
+        // reaches WebCore -- the memory cache and the back/forward cache count
+        // are computed from this number too (Shared/CacheModel.cpp).
+        if (const char* n9Override = getenv("WEBKIT_RAM_SIZE_MB")) {
+            long n9Mb = atol(n9Override);
+            if (n9Mb > 0) {
+                ramSize = static_cast<size_t>(n9Mb) * 1024 * 1024;
+                return;
+            }
+        }
+        ramSize = computeRAMSize();
+    });
+    return ramSize;
+}"""
+t = t.replace(old, new, 1)
+
+# getenv/atol: the file includes neither today.
+inc = "#include <wtf/RAMSize.h>"
+if inc not in t:
+    raise SystemExit("RAMSize.cpp include site not found")
+t = t.replace(inc, inc + "\n#include <cstdlib>   // n9: WEBKIT_RAM_SIZE_MB", 1)
+
+open(p, "w").write(t)
+print("==> patched WTF::ramSize(): honours WEBKIT_RAM_SIZE_MB")
+PYEOF
+}
+
+patch_ram_size
+
 # Long press on a link, which WPE generates and then discards.
 #
 # TouchGestureController turns a press held past 500 ms into a ContextMenuEvent
@@ -319,6 +389,12 @@ cmake -S "$SRC" -B "$B" -GNinja \
     -DENABLE_DOCUMENTATION=OFF -DENABLE_MINIBROWSER=OFF \
     -DENABLE_BUBBLEWRAP_SANDBOX=OFF -DENABLE_JOURNALD_LOG=OFF \
     -DENABLE_XSLT=OFF \
+    # ENABLE_NOTIFICATIONS is deliberately NOT here. Turning it off fails the
+    # build: PlatformEnable.h asserts NOTIFICATION_EVENT requires NOTIFICATIONS,
+    # and PlatformEnableGlib.h hardcodes ENABLE_NOTIFICATION_EVENT 1 for every
+    # GLib port with no cmake option to turn it off. It would need a fourth
+    # source patch for an unmeasured code-size gain; options before patches.
+    -DENABLE_REMOTE_INSPECTOR=OFF -DENABLE_GEOLOCATION=OFF \
     -DUSE_SYSTEMD=OFF -DUSE_AVIF=OFF -DUSE_JPEGXL=OFF -DUSE_LCMS=OFF \
     -DUSE_LIBDRM=OFF -DUSE_GBM=OFF -DUSE_OPENJPEG=OFF -DUSE_LIBBACKTRACE=OFF \
     -DUSE_WOFF2=ON -DUSE_SOUP2=OFF \

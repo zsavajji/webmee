@@ -4,6 +4,94 @@ A brief for an agent. Goal: lower WebMee's memory footprint and raise its
 frame rate and load speed on the N9, with JavaScript off (the default) and
 with JavaScript on. Every change is measured before it is kept.
 
+## STATUS as of 2026-09-21 — read this before the plan below
+
+Phases 0, 1.1, 1.2, 2.1, 2.2, 3.1 and 3.2 are done. **The plan text below was
+written before any of it was verified and is wrong in seven places**, each
+marked here. Trust this section over it.
+
+### What exists now
+
+| | |
+|---|---|
+| `probe/bench.sh` | one run on the device, one `key=value` line |
+| `probe/bench-host.sh` | ssh driver, warm-up + N interleaved runs, medians as a markdown row |
+| `probe/bench-corpus.sh` | fetches the 5-page corpus on the host, `--push` sends it |
+| corpus | `/home/user/bench/` on the device, `out/bench/` on the host, README with the original URLs |
+| `docs/features.txt` | all 367 runtime features this build exposes |
+
+Harness knobs, all forwarded by `bench-host.sh`: `N9_ENGINE`, `N9_BLOCKLIST`,
+`WEBKIT_RAM_SIZE_MB`, `JS=0|1` to restrict to one mode.
+
+### The one thing left half-done
+
+**3.2 is built, installed and verified on the device, but NOT measured.** The
+A/B is the next action and takes about ten minutes:
+
+```sh
+JS=1 WEBKIT_RAM_SIZE_MB=985 sh probe/bench-host.sh ram985 https://github.com/zsavajji 3
+JS=1 WEBKIT_RAM_SIZE_MB=256 sh probe/bench-host.sh ram256 https://github.com/zsavajji 3
+```
+
+985 is what the device reports, so that arm is the baseline; the engine's own
+default is 256, set with `overwrite=0`. Check the `RAM_SIZE` trace line differs
+between arms before believing the numbers. Expected from
+`Shared/CacheModel.cpp`: memory cache 16 MB -> 8 MB, back/forward cache 2
+documents -> 1. Metrics: `VmHWM` and frames.
+
+### Where the plan is wrong
+
+1. **1.1** — the engine's comment claimed 2.44 exposes no web-process pressure
+   settings. False: `WebKitWebContext:memory-pressure-settings`, CONSTRUCT_ONLY,
+   since 2.34. Applied, **-10.2 MB** peak with JS on.
+2. **1.2** — "the first real control over RAM" is worth about 3 MB. Only
+   dropping the bfcache pays; `clearmemcache` and `cachemodel viewer` measure
+   nothing and slightly worse respectively. RSS cannot see memory returned to
+   bmalloc rather than the OS, so that null is partly the metric's fault.
+3. **2.1** — done and verified blocking, but **the gain is unmeasured and the
+   run taken is void**: the test network filters ads upstream. Needs an
+   unfiltered network. Left on by default.
+4. **2.2** — every feature name in the plan is wrong (spurious `Enabled`
+   suffix), and `AsyncFrameScrolling`, the "highest expected value" item, is
+   **already on by default**, as are `ThreadedScrolling` and
+   `AsyncOverflowScrolling`. Nothing to A/B.
+5. **3.1** — `ENABLE_SERVICE_WORKER` and `ENABLE_INDEXED_DATABASE` are not
+   cmake options in 2.44; `ENABLE_NOTIFICATIONS=OFF` **fails the build**
+   (`PlatformEnableGlib.h:47` hardcodes `NOTIFICATION_EVENT`). The two that
+   work bought **131 KB**. The inspector's 1.37 MB is a separate library that
+   `PlatformWPE.cmake:527` builds unconditionally, so `REMOTE_INSPECTOR=OFF`
+   does not drop it.
+6. **3.2** — patch `ramSize()`, NOT `computeRAMSize()`'s Linux branch: this
+   build has `USE_SYSTEM_MALLOC 0`, so that branch is `#if`'d out and the
+   function returns `bmalloc::api::availableMemory()`.
+7. **1.4** — answered without an experiment: `webprocs=1` in 43 of 43 runs,
+   every page, both JS modes, live GitHub included. Nothing spawns a second
+   web process; process-swap is patched off and the process cache is disabled
+   below 3 GB.
+
+### Measurement conditions that invalidate results
+
+- **A locked or blanked screen cuts frames ~5x** (9-11 vs 55, same page).
+  `bench.sh` records `display=` and warns; it holds the display on but
+  **cannot unlock** the phone (`req_tklock_mode_change` is refused to uid
+  29999). Unlock by hand before a timing run.
+- **This network pre-filters ads**, so any content-blocker A/B taken on it
+  understates the gain.
+- **The documented 3.6x JS on/off frame gap did not reproduce**: 1.44x on
+  `github.com/zsavajji`, after fixing the frame window to include the momentum
+  fling. Scroll-phase CPU does separate cleanly (755 vs 1623). Either the
+  harness still differs from whatever produced 3.6x, or that figure is
+  optimistic — it is the stated justification for JavaScript defaulting off, so
+  it is worth settling. Dense drag motions were tried and **rejected**: they
+  erased the difference (362 vs 360).
+
+### Not started
+
+2.4 (per-site JS allowlist), 2.5 (fonts), 2.6 (render scale) — none need an
+install. 3.3/3.4 (tile cover area and size; `keepRect = coverRect`, there is no
+separate keep multiplier, and the tile is 512). Phase 4 is still conditional and
+the CPU split that would trigger it has not been taken.
+
 ## Read first
 
 `docs/performance.md`, `docs/gotchas.md`, `docs/process-swap.md`,

@@ -441,6 +441,30 @@ index rather than emptying it.
   Tracker about them.
 - `zoom` (page zoom) remains in the protocol but nothing drives it; pinch uses
   `scale` instead.
+- **Geolocation is compiled out** (`-DENABLE_GEOLOCATION=OFF`), and getting it
+  back is a feature, not a flag. Written down here so the next look does not
+  start from scratch:
+  - The GLib API is the easy part and it is present: `WebKitGeolocationManager`
+    plus `WebKitGeolocationPermissionRequest`, where the embedder answers
+    `start`/`stop` and calls `webkit_geolocation_manager_update_position()`.
+  - **WPE's own provider is useless here.** `UIProcess/geoclue/`
+    `GeoclueGeolocationProvider.cpp` drives GeoClue2 / the xdg-desktop-portal
+    Location portal over D-Bus. This device has no geoclue at all -- it has
+    Harmattan's `liblocation` (`liblocationextras.so`), an unrelated 2011 API.
+  - **The fix cannot live in the engine.** `liblocation` is GObject built
+    against the device's 2011 GLib and the engine bundles GLib 2.78; two
+    copies in one process is the two-GType-registries failure that
+    [building.md](building.md) forbids. So the position has to come from the
+    SHELL over the protocol, the same split downloads and HTTP auth already
+    use.
+  - Also needed: `MOBILITY = location` (absent from `shell/webmee.pro`), a
+    permission dialog -- **nothing in this project answers a permission request
+    of any kind today** -- and a `Location` credential in `debian/webmee.aegis`,
+    which currently requests only `UID::user` and `GID::users`. A missing aegis
+    credential fails silently on a closed-mode device.
+  - It was switched off because nothing could reach it: an unanswered
+    permission request is denied by WebKit's default, so the code was weight
+    with no path to it. No working feature was removed.
 - **Scrolling inside a page element that consumes touch does not work** (cookie
   banners, modals). The `axis` command was added for this and does not work as
   written — see [protocol.md](protocol.md). While the chrome is up its rows are
