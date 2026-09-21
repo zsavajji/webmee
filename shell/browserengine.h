@@ -52,17 +52,14 @@ class BrowserEngine : public QObject
     Q_PROPERTY(bool suggestionsEnabled READ suggestionsEnabled WRITE setSuggestionsEnabled NOTIFY settingsChanged)
 
     // --- caching -----------------------------------------------------------
-    // Sized for this device, not by WebKit's RAM-proportional defaults, which
-    // would over-allocate: the N9 reports ~1 GB total but only ~250 MB is
-    // actually free at rest.
-    //   disk   64 MB in /home/user/.cache (the 2 GB /home partition). Worth
-    //          having: re-fetching over 3G costs far more than an eMMC read.
-    //   memory 12 MB. Small on purpose; the disk cache absorbs the rest.
-    //   page   1 bfcache entry, so Back is instant without holding N pages live.
+    // There are no cache SIZE knobs here, because WebKit's GLib API has none.
+    // Three used to exist -- disk MB, memory MB, bfcache entries -- and each
+    // set a member, emitted a signal, and reached the engine never. What the
+    // API does expose at runtime is three switches, which the engine now takes
+    // as `set pagecache`, `cachemodel` and `clearmemcache`, and which
+    // onMemoryPressure() drives. Usage is still worth reporting: it is read off
+    // the directory, so it is a fact rather than a setting.
     Q_PROPERTY(QString diskCachePath READ diskCachePath CONSTANT)
-    Q_PROPERTY(int diskCacheMb READ diskCacheMb WRITE setDiskCacheMb NOTIFY cacheChanged)
-    Q_PROPERTY(int memoryCacheMb READ memoryCacheMb WRITE setMemoryCacheMb NOTIFY cacheChanged)
-    Q_PROPERTY(int pageCacheEntries READ pageCacheEntries WRITE setPageCacheEntries NOTIFY cacheChanged)
     Q_PROPERTY(int cacheUsageMb READ cacheUsageMb NOTIFY cacheChanged)
 
 public:
@@ -97,12 +94,6 @@ public:
     Q_INVOKABLE bool looksLikeUrl(const QString &text) const;
 
     QString diskCachePath() const { return m_diskCachePath; }
-    int diskCacheMb() const { return m_diskCacheMb; }
-    void setDiskCacheMb(int mb);
-    int memoryCacheMb() const { return m_memoryCacheMb; }
-    void setMemoryCacheMb(int mb);
-    int pageCacheEntries() const { return m_pageCacheEntries; }
-    void setPageCacheEntries(int n);
     int cacheUsageMb() const;
 
 public slots:
@@ -124,10 +115,12 @@ public slots:
     void clearCookies();
     void clearAll();
 
-    // Driven by MemoryWatcher. 0 normal, 1 low, 2 critical. Sheds progressively:
-    // bfcache first (cheapest to lose), then the memory cache, then decoded
-    // image data. Being OOM-killed loses the whole session, so shedding early
-    // is always the better trade.
+    // Driven by MemoryWatcher. 0 normal, 1 low, 2 critical. Sheds progressively
+    // and, unlike the version this replaces, over the wire: Low drops the
+    // bfcache and empties the memory cache, Critical additionally switches the
+    // cache model to DOCUMENT_VIEWER, which is what disables the memory cache
+    // outright. Normal restores both. Being OOM-killed loses the whole session,
+    // so shedding early is the better trade.
     void onMemoryPressure(int level);
 
     // Called by WebViewItem whenever the QML page area resizes. Only the SIZE
@@ -261,9 +254,11 @@ private:
     QString m_searchEngine;
 
     QString m_diskCachePath;
-    int m_diskCacheMb;
-    int m_memoryCacheMb;
-    int m_pageCacheEntries;
+    // What the engine was last told, so a return to Normal only undoes what
+    // was actually done. Shedding twice is harmless; restoring something that
+    // was never shed re-enables a cache the user had turned off.
+    bool m_pageCacheOn;
+    bool m_memoryCacheOn;
 
     QString m_dataPath;
     QString m_downloadDir;

@@ -24,7 +24,9 @@ keystroke at a time — so neither end may trim a line, only strip its terminato
 | `scale <magnification>` | Pinch result, ≥ 1.0. Raises device size and scale factor together so the CSS viewport is unchanged. Clamped by the engine to what `MAX_TEXTURE_SIZE` allows. |
 | `zoom <level>` | WebKit page zoom. Relayouts. Currently unused — pinch uses `scale`. |
 | `touch <down\|motion\|up> <slot> <x> <y>` | One touchpoint in **surface device pixels**. WebKit divides by the scale factor to get CSS pixels. |
-| `set <javascript\|images> <0\|1>` | Runtime settings. |
+| `set <javascript\|images\|pagecache> <0\|1>` | Runtime settings. `pagecache` is `enable-page-cache`, i.e. the back/forward cache. |
+| `cachemodel <viewer\|browser>` | `DOCUMENT_VIEWER` or `DOCUMENT_BROWSER`. Viewer is the one that **disables the memory cache** (`WebProcessPoolGLib.cpp` sets `memoryCacheDisabled` from it); browser is the normal state. |
+| `clearmemcache` | Empty the memory cache, leaving the disk cache alone. Distinct from `clearcache`, which drops both -- dropping the disk cache frees no RAM and costs refetches. |
 | `layoutwidth <css px>` | CSS pixels the page lays out to (base 345). Wider means more CSS pixels in **both** directions, so this is also the knob for "the page does not fit vertically". |
 | `renderscale <n>` | Device pixels rasterised per CSS pixel. 1.0 = Fast (rasterise small, upscale), 1.5 = Sharp (match the panel 1:1). Does not change layout. |
 | `useragent <string>` | Rest of the line, spaces included. |
@@ -61,6 +63,26 @@ keystroke at a time — so neither end may trim a line, only strip its terminato
 | `dlprogress <received> <total> <uri>` | Throttled to one line per 64 KiB. `received-data` fires per chunk, and this pipe also carries frames. |
 | `dlfinish <b64path> <uri>` / `dlfail <b64error> <uri>` | Terminal. A cancel arrives as `dlfail`. |
 | `auth <retry> <host[:port]> <realm>` | A server asked for HTTP credentials. The port is appended only when it is not the scheme's own. `realm` is the server's own name for the protected area, is last because it is free text, and may be empty. `retry` means the previous answer was rejected. The engine is holding the request and the page is not loading until `authok` or `authcancel` arrives. |
+
+### The three cache controls, and the three that never existed
+
+WebKit's GLib API exposes exactly three runtime cache controls, and they are
+the three commands above: `webkit_settings_set_enable_page_cache`,
+`webkit_web_context_set_cache_model` and `webkit_website_data_manager_clear`
+with `WEBKIT_WEBSITE_DATA_MEMORY_CACHE`. There is **no setter for a cache
+size**.
+
+The shell used to offer three sizes anyway -- disk MB, memory MB, bfcache
+entries. Each set a member, emitted `cacheChanged()`, and reached the engine
+never, so `onMemoryPressure` level 1 did nothing whatsoever and level 2 cleared
+the *disk* cache, freeing no RAM and costing refetches over 3G. They are gone.
+`cacheUsageMb` stays, because it is measured off the directory rather than
+configured.
+
+Pressure now maps onto what exists: **Low** = `set pagecache 0` +
+`clearmemcache`; **Critical** = also `cachemodel viewer`; **Normal** restores
+both. The shell tracks what it last sent so that returning to Normal only
+undoes what it actually did.
 
 ## Text input
 

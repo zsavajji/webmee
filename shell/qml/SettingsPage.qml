@@ -129,7 +129,10 @@ Page {
             Label { text: qsTr("Storage"); font.pixelSize: 24 }
 
             Label {
-                text: qsTr("Cache: %1 MB of %2 MB").arg(engine.cacheUsageMb).arg(engine.diskCacheMb)
+                // Usage only. It used to read "of 64 MB", and the 64 was a
+                // fiction: WebKit's GLib API has no cache-size setter, so
+                // nothing ever imposed that ceiling.
+                text: qsTr("Cache: %1 MB").arg(engine.cacheUsageMb)
                 font.pixelSize: 20
                 color: "#999999"
             }

@@ -70,9 +70,8 @@ BrowserEngine::BrowserEngine(QObject *parent)
     , m_suggestions(true)
     , m_uaPreset("mobile")
     , m_searchEngine("DuckDuckGo")
-    , m_diskCacheMb(64)
-    , m_memoryCacheMb(12)
-    , m_pageCacheEntries(1)
+    , m_pageCacheOn(true)
+    , m_memoryCacheOn(true)
     , m_zoom(0)
     , m_renderScale(1.0)
     , m_layoutWidth(345)
@@ -705,28 +704,8 @@ void BrowserEngine::setUserAgentPreset(const QString &preset)
     emit settingsChanged();     // applied by commitSettings()
 }
 
-void BrowserEngine::setDiskCacheMb(int mb)
-{
-    if (m_diskCacheMb == mb) return;
-    m_diskCacheMb = mb;
-    emit cacheChanged();
-}
-
-void BrowserEngine::setMemoryCacheMb(int mb)
-{
-    if (m_memoryCacheMb == mb) return;
-    m_memoryCacheMb = mb;
-    emit cacheChanged();
-}
-
-void BrowserEngine::setPageCacheEntries(int n)
-{
-    if (m_pageCacheEntries == n) return;
-    m_pageCacheEntries = n;
-    emit cacheChanged();
-}
-
-int BrowserEngine::cacheUsageMb() const
+    , m_pageCacheOn(true)
+    , m_memoryCacheOn(true)int BrowserEngine::cacheUsageMb() const
 {
     // Recursive: WebKit nests its cache (WebKitCache/Version 16/<salt>/...), so
     // summing only the top level reported zero however full the cache was.
@@ -761,19 +740,32 @@ void BrowserEngine::clearAll()
 
 void BrowserEngine::onMemoryPressure(int level)
 {
-    // Order matters: drop what is cheapest to rebuild first. The engine has its
-    // own WebKitMemoryPressureSettings as well; this is the shell's own shedding.
-    switch (level) {
-    case 0:
-        break;
-    case 1:
-        setPageCacheEntries(0);
-        break;
-    default:
-        setPageCacheEntries(0);
-        setMemoryCacheMb(4);
-        clearCache();
-        break;
+    // Order matters: drop what is cheapest to rebuild first.
+    //
+    // Every line here used to set a member and emit a signal, so Low did
+    // nothing at all and Critical cleared the DISK cache -- which frees no RAM
+    // and costs refetches over 3G. These three commands are the only runtime
+    // cache controls WebKit's GLib API actually has, and each one now goes to
+    // the engine.
+    //
+    // The engine has its own WebKitMemoryPressureSettings too, and that is the
+    // better lever because it runs inside the web process; this is the shell's
+    // own shedding on top of it.
+    const bool wantPageCache = (level == 0);
+    const bool wantMemoryCache = (level < 2);
+
+    if (m_pageCacheOn != wantPageCache) {
+        m_pageCacheOn = wantPageCache;
+        send(QString("set pagecache %1").arg(m_pageCacheOn ? 1 : 0));
     }
+    if (m_memoryCacheOn != wantMemoryCache) {
+        m_memoryCacheOn = wantMemoryCache;
+        send(QString("cachemodel %1").arg(m_memoryCacheOn ? "browser" : "viewer"));
+    }
+    // Emptying it is separate from disabling it: at Low the cache stays
+    // enabled and is simply dropped, which is the cheap half.
+    if (level > 0)
+        send("clearmemcache");
+
     emit memoryPressure(level);
 }

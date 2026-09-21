@@ -13,7 +13,8 @@
  *
  *   in:  load <url> | back | forward | reload | stop | geometry <x> <y> <w> <h>
  *        touch <down|motion|up> <slot> <x> <y> | zoom <level>
- *        set <javascript|images> <0|1> | scale <magnification>
+ *        set <javascript|images|pagecache> <0|1> | scale <magnification>
+ *        cachemodel <viewer|browser> | clearmemcache
  *        renderscale <pixels per css pixel> | useragent <string>
  *        axis <x> <y> <dx> <dy> | layoutwidth <css px>
  *        text <utf8> | key <keysym> <0|1> | scrollby <dx> <dy>
@@ -84,7 +85,14 @@
  */
 #define N9_MAX_SURFACE_PX        2048
 
-#define N9_MEMORY_LIMIT_MB       200
+/* The WEB process. This is the one that matters: measured on device it peaks
+ * at 116-129 MB for a single page against ~150 MB free, and it is the only
+ * process whose growth can take the session down. */
+#define N9_MEMORY_LIMIT_MB       150
+/* The NETWORK process, sized separately. 200 MB was above what the device has
+ * free, so the limit could never be reached and the settings never did
+ * anything; measured, it peaks around 12 MB. */
+#define N9_NET_MEMORY_LIMIT_MB   64
 #define N9_CONSERVATIVE_FRACTION 0.33
 #define N9_STRICT_FRACTION       0.50
 /* Killing the web process loses the page outright; on hardware this slow the
@@ -951,7 +959,30 @@ static void handle_command(const char *line)
                 set_javascript(st, val ? TRUE : FALSE);
             else if (!strcmp(key, "images"))
                 webkit_settings_set_auto_load_images(st, val ? TRUE : FALSE);
+            else if (!strcmp(key, "pagecache"))
+                webkit_settings_set_enable_page_cache(st, val ? TRUE : FALSE);
         }
+    } else if (!strncmp(line, "cachemodel ", 11)) {
+        /* DOCUMENT_VIEWER is the one that disables the memory cache outright:
+           WebProcessPoolGLib.cpp sets parameters.memoryCacheDisabled when the
+           cache model is that. BROWSER is the normal state. These are the only
+           runtime cache controls the GLib API has -- there is no setter for a
+           cache SIZE, which is why the shell's three size sliders could never
+           have worked. */
+        int viewer = !strcmp(line + 11, "viewer");
+        webkit_web_context_set_cache_model(
+            webkit_web_view_get_context(view),
+            viewer ? WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER
+                   : WEBKIT_CACHE_MODEL_DOCUMENT_BROWSER);
+        fprintf(stderr, "[n9engine] cache model %s\n", viewer ? "viewer" : "browser");
+    } else if (!strcmp(line, "clearmemcache")) {
+        /* The MEMORY cache only. `clearcache` drops the disk cache too, which
+           frees no RAM and costs refetches over 3G -- the wrong trade when the
+           point is to shed memory. */
+        if (session)
+            webkit_website_data_manager_clear(
+                webkit_network_session_get_website_data_manager(session),
+                WEBKIT_WEBSITE_DATA_MEMORY_CACHE, 0, NULL, NULL, NULL);
     } else if (!strcmp(line, "clearcache") || !strcmp(line, "clearcookies")) {
         /* WebKit owns these files and holds them open, so the shell must not
            delete them behind its back -- ask the owner instead. */
@@ -1016,12 +1047,11 @@ int main(int argc, char *argv[])
      */
     setenv("JSC_useConcurrentJIT", "false", 0);
 
-    /* NETWORK process only -- despite the generic-sounding name, the docs are
-       explicit: "The periodic check for used memory is disabled by default on
-       network processes." WPE 2.44 exposes no equivalent for the web process,
-       which therefore runs with WebKit's default limit of system RAM. */
+    /* The NETWORK process. Despite the generic-sounding name this call reaches
+       only that one: the docs are explicit that "the periodic check for used
+       memory is disabled by default on network processes". */
     WebKitMemoryPressureSettings *pressure = webkit_memory_pressure_settings_new();
-    webkit_memory_pressure_settings_set_memory_limit(pressure, N9_MEMORY_LIMIT_MB);
+    webkit_memory_pressure_settings_set_memory_limit(pressure, N9_NET_MEMORY_LIMIT_MB);
     webkit_memory_pressure_settings_set_conservative_threshold(pressure, N9_CONSERVATIVE_FRACTION);
     webkit_memory_pressure_settings_set_strict_threshold(pressure, N9_STRICT_FRACTION);
     webkit_memory_pressure_settings_set_kill_threshold(pressure, N9_KILL_FRACTION);
@@ -1072,7 +1102,36 @@ int main(int argc, char *argv[])
         }
     }
 
-    WebKitWebContext *context = webkit_web_context_new();
+    /* The WEB process gets its own pressure settings, and this is the only way
+       to give it any. An earlier comment here said 2.44 exposes no equivalent
+       for the web process; that was wrong. WebKitWebContext has had a
+       `memory-pressure-settings` property since 2.34. It is CONSTRUCT_ONLY, so
+       it cannot be set on a context that already exists -- hence g_object_new
+       rather than webkit_web_context_new(). Verified in the tree: the property
+       feeds configuration.setMemoryPressureHandlerConfiguration(), which
+       reaches WebProcessCreationParameters for every web process the context
+       creates.
+       This is what makes WebKit's own releaseMemory() run INSIDE the web
+       process -- dropping decoded images, running a JSC GC, shrinking the
+       caches. Nothing in the shell can reach any of that.
+       Do NOT set WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR=1 to quieten the
+       UI-process poller: the same flag sets shouldSuppressMemoryPressureHandler
+       and turns off the handler being installed here. */
+    WebKitMemoryPressureSettings *web_pressure = webkit_memory_pressure_settings_new();
+    webkit_memory_pressure_settings_set_memory_limit(web_pressure, N9_MEMORY_LIMIT_MB);
+    webkit_memory_pressure_settings_set_conservative_threshold(web_pressure, N9_CONSERVATIVE_FRACTION);
+    webkit_memory_pressure_settings_set_strict_threshold(web_pressure, N9_STRICT_FRACTION);
+    webkit_memory_pressure_settings_set_kill_threshold(web_pressure, N9_KILL_FRACTION);
+    WebKitWebContext *context = WEBKIT_WEB_CONTEXT(
+        g_object_new(WEBKIT_TYPE_WEB_CONTEXT,
+                     "memory-pressure-settings", web_pressure, NULL));
+    webkit_memory_pressure_settings_free(web_pressure);
+    /* Say what was actually applied. A setting that looks wired and is not has
+       cost this project four separate controls already. */
+    fprintf(stderr, "[n9engine] web process memory limit %d MB "
+            "(conservative %.2f strict %.2f kill %.2f), network %d MB\n",
+            N9_MEMORY_LIMIT_MB, N9_CONSERVATIVE_FRACTION, N9_STRICT_FRACTION,
+            N9_KILL_FRACTION, N9_NET_MEMORY_LIMIT_MB);
     /* DOCUMENT_BROWSER, not WEB_BROWSER: the latter caches "a very large number
        of resources and previously viewed content", the wrong trade on 350 MB. */
     webkit_web_context_set_cache_model(context, WEBKIT_CACHE_MODEL_DOCUMENT_BROWSER);

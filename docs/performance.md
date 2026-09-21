@@ -91,6 +91,98 @@ scripts show nothing until the switch is flipped. The setting persists, so it is
 flipped once. Engine-side optimisation is still the only thing that helps a page
 that genuinely needs its JavaScript.
 
+## Applied: memory-pressure settings for the WEB process
+
+`app/n9engine.c` used to say WPE 2.44 exposes nothing for the web process and
+set `WebKitMemoryPressureSettings` on the network session alone. That was
+wrong. `WebKitWebContext` has had a **`memory-pressure-settings` property since
+2.34** (`WebKitWebContext.cpp:597`); it is `CONSTRUCT_ONLY`, so the context has
+to be built with `g_object_new` rather than `webkit_web_context_new()`. Traced
+in the tree, it feeds `configuration.setMemoryPressureHandlerConfiguration()`
+and reaches `WebProcessCreationParameters` for every web process the context
+creates -- which is what makes WebKit's own `releaseMemory()` run **inside** the
+web process: decoded images dropped, a JSC GC, caches shrunk. Nothing in the
+shell can reach any of that.
+
+Web process 150 MB, network process 64 MB (was 200, which is above what the
+device has free, so it could never be reached); conservative 0.33, strict 0.50,
+kill 0.90.
+
+`https://github.com/zsavajji`, medians of 3, live network, `probe/bench-host.sh`:
+
+| | JS | web VmHWM kB | frames | web CPU (scroll) |
+|---|---|---|---|---|
+| before | off | 76040 | 678 | 755 |
+| **after** | off | 76040 | 685 | 799 |
+| before | on | 129164 | 471 | 1623 |
+| **after** | on | **119004** | 596 | 1672 |
+
+**-10.2 MB (-7.9%) of web-process peak with JavaScript on**, frames and CPU
+unchanged. JavaScript off is untouched to the kilobyte, which is the expected
+shape: that arm peaks at 76 MB and never approaches the 150 MB limit, so the
+handler never fires. The win is only available where the process was actually
+growing.
+
+Three runs, not the five this file's own rules ask for. `VmHWM` is the most
+reproducible number here -- the JS-off arm returned *identical* 76040 kB before
+and after -- so the delta is trusted further than a 3-run CPU delta would be,
+but it is not yet a five-run result.
+
+**Do not** set `WEBKIT_DISABLE_MEMORY_PRESSURE_MONITOR=1` to quieten the
+UI-process poller. It is the only switch for that monitor, and it also sets
+`shouldSuppressMemoryPressureHandler` (`WebProcessPoolGLib.cpp:122`), which
+turns off the very handler this change installs.
+
+Not yet tried: kill threshold disabled. Losing the page is the worse outcome on
+this device, and 0.90 of 150 MB is reachable.
+
+## Applied: the shell's cache levers now reach the engine (and mostly do not pay)
+
+`BrowserEngine` offered three cache SIZES -- disk MB, memory MB, bfcache
+entries. Each set a member, emitted `cacheChanged()` and reached the engine
+never, so memory pressure Low did nothing at all and Critical cleared the
+**disk** cache, which frees no RAM and costs refetches. WebKit's GLib API has
+no cache-size setter, so they could never have worked. They are deleted.
+
+What the API does have is three switches, now protocol commands
+(`docs/protocol.md`): `set pagecache <0|1>`, `cachemodel <viewer|browser>`,
+`clearmemcache`. Low = pagecache off + clearmemcache; Critical = also cachemodel
+viewer; Normal restores.
+
+Engine driven standalone, JavaScript **on**, two navigations first so a
+back/forward cache entry exists, `WPEWebProcess` `VmRSS`:
+
+| after | VmRSS kB | delta |
+|---|---|---|
+| (before shedding) | 111140 | |
+| `set pagecache 0` | 108292 | **-2.8 MB** |
+| `clearmemcache` | 108296 | +4 kB |
+| `cachemodel viewer` | 110684 | **+2.4 MB** |
+
+**Only dropping the back/forward cache pays**, and it pays about 2.8 MB. The
+other two show nothing and the cache-model switch measures slightly *worse*.
+
+Two reasons not to read that as "the memory cache is empty", and they matter
+before anyone repeats this:
+
+- **RSS cannot see memory returned to the allocator but not to the OS.** Freeing
+  a cache inside the web process hands the pages back to bmalloc, which keeps
+  them. A null RSS delta is evidence about the metric as much as about the
+  cache. `VmHWM` is worse still -- it is a high-water mark and cannot go down
+  at all.
+- One run, not five.
+
+Kept anyway, because the alternative is not "something better" but the dead
+code it replaces: these commands demonstrably arrive (`cache model viewer` /
+`cache model browser` traced on device, engine still rendering 72 frames
+afterwards, no failures), where the old ones demonstrably did not. The honest
+summary is that the shell's own shedding is worth ~3 MB and the real lever is
+the web process's own pressure handler above.
+
+Worth trying if this is revisited: whether `cachemodel viewer` earns its place
+at all, measured with something that can see inside the allocator rather than
+RSS.
+
 ## Render scale: user-switchable, effect unmeasured
 
 Settings → Rendering → **Fast** (1.0x, default) / **Sharp** (1.5x). The layout is
@@ -121,6 +213,17 @@ Each of these produced a confidently wrong number at least once.
 - **`invoker --single-instance` hands off to an already-running instance**, so a
   side-by-side test can silently measure the *installed* build instead of the
   new one. Drop the flag when testing.
+- **A locked or blanked screen suppresses frame production.** The same page
+  (`tall.html`, JS off, identical command) scored **9-11 frames locked and 55
+  unlocked** -- a 5x error, dwarfing every effect being measured, and it looks
+  exactly like a slow page. CPU and RSS were unaffected, so nothing else in the
+  run hints at it. `probe/bench.sh` asks MCE for
+  `get_display_status`/`get_tklock_mode` before and after every run, reports
+  them as `display=`, and warns when they are not `on:unlocked`. It also holds
+  the display on (`req_display_blanking_pause`, renewed every 30 s, because the
+  pause lapses after about a minute). It **cannot** unlock the phone: `user`
+  (uid 29999) is refused `req_tklock_mode_change` by D-Bus policy, so a locked
+  device must still be unlocked by hand.
 - **Run-to-run variance is large** (~16% on CPU for an identical config). Treat
   anything under ~20% as unproven without repeats.
 
