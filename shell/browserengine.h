@@ -45,6 +45,8 @@ class BrowserEngine : public QObject
     Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY historyChanged)
     Q_PROPERTY(bool javascriptEnabled READ javascriptEnabled WRITE setJavascriptEnabled NOTIFY settingsChanged)
     Q_PROPERTY(bool imagesEnabled READ imagesEnabled WRITE setImagesEnabled NOTIFY settingsChanged)
+    // Third-party ad and tracker blocking. Defaults ON.
+    Q_PROPERTY(bool contentBlocker READ contentBlocker WRITE setContentBlocker NOTIFY settingsChanged)
     Q_PROPERTY(QString userAgentPreset READ userAgentPreset WRITE setUserAgentPreset NOTIFY settingsChanged)
     // Purely a shell preference -- the engine is never told. It lives here
     // because this is where persisted settings live, and splitting that would
@@ -78,6 +80,8 @@ public:
     void setSuggestionsEnabled(bool on);
     bool imagesEnabled() const { return m_images; }
     void setImagesEnabled(bool on);
+    bool contentBlocker() const { return m_blocker; }
+    void setContentBlocker(bool on);
     QString userAgentPreset() const { return m_uaPreset; }
     void setUserAgentPreset(const QString &preset);
     // The UA string a preset maps to. WebKit's default announces
@@ -249,6 +253,7 @@ private:
 
     bool m_javascript;
     bool m_images;
+    bool m_blocker;
     bool m_suggestions;
     QString m_uaPreset;
     QString m_searchEngine;
@@ -276,6 +281,7 @@ private:
     QString m_appliedUa;
     bool m_appliedJavascript;
     bool m_appliedImages;
+    bool m_appliedBlocker;
     QSize m_viewport;
     QProcess *m_engine;
     qulonglong m_engineWindow;

@@ -14,7 +14,7 @@
  *   in:  load <url> | back | forward | reload | stop | geometry <x> <y> <w> <h>
  *        touch <down|motion|up> <slot> <x> <y> | zoom <level>
  *        set <javascript|images|pagecache> <0|1> | scale <magnification>
- *        cachemodel <viewer|browser> | clearmemcache
+ *        set blocker <0|1> | cachemodel <viewer|browser> | clearmemcache
  *        renderscale <pixels per css pixel> | useragent <string>
  *        axis <x> <y> <dx> <dy> | layoutwidth <css px>
  *        text <utf8> | key <keysym> <0|1> | scrollby <dx> <dy>
@@ -99,6 +99,10 @@
  * user would rather wait through swapping than lose the session. */
 #define N9_KILL_FRACTION         0.90
 
+/* Where the shipped ruleset lives. Overridden by N9_BLOCKLIST, which is how it
+   is tested without root -- /opt is not writable after a package install. */
+#define N9_BLOCKLIST_DEFAULT     "/opt/n9browser/share/webmee/blocklist.json"
+
 static GMainLoop *loop = NULL;
 static WebKitWebView *view = NULL;
 static WebKitNetworkSession *session = NULL;
@@ -113,6 +117,115 @@ static float surface_mag = 1.0f;
  * the app against a module that is not meant to be a link-time dependency. */
 typedef void (*move_resize_fn)(int, int, unsigned, unsigned);
 static move_resize_fn backend_move_resize = NULL;
+
+/*
+ * Content blocker.
+ *
+ * WebKit compiles a Safari content-blocker ruleset into a DFA once and stores
+ * it; after that, matching costs the network path almost nothing. This is the
+ * one lever that helps with JavaScript ON *and* off -- with scripts stripped,
+ * a page's tracking pixels, third-party images and iframes are still fetched.
+ *
+ * Both store calls are async and there is no synchronous variant, so the
+ * filter can land a moment after the first page has started loading. That is
+ * accepted rather than worked around: blocking startup on a DFA compile is the
+ * worse trade, and the compile only happens when the ruleset changes.
+ */
+#define N9_FILTER_ID "n9block"
+/* Defined with the other environment helpers further down; the blocker reads
+   its initial state before that point. */
+static gboolean env_flag(const char *name);
+static WebKitUserContentManager *content_manager = NULL;
+static gint64 filter_t0 = 0;
+/* The compiled filter is kept alive for the life of the process so the toggle
+   can put it back without recompiling; only the ADD is undone by turning it
+   off. Default on -- see docs/performance.md on why an ambiguous measurement
+   leaves it on rather than off. */
+static WebKitUserContentFilter *active_filter = NULL;
+static gboolean blocker_enabled = TRUE;
+
+static void apply_blocker(void)
+{
+    if (!content_manager || !active_filter) return;
+    if (blocker_enabled)
+        webkit_user_content_manager_add_filter(content_manager, active_filter);
+    else
+        webkit_user_content_manager_remove_filter_by_id(content_manager, N9_FILTER_ID);
+    fprintf(stderr, "[n9engine] content blocker %s\n",
+            blocker_enabled ? "on" : "off");
+}
+
+static void filter_ready(WebKitUserContentFilter *filter, const char *how)
+{
+    if (!filter) return;
+    active_filter = filter;          /* ref kept deliberately, see above */
+    fprintf(stderr, "[n9engine] content blocker %s in %d ms\n",
+            how, (int) ((g_get_monotonic_time() - filter_t0) / 1000));
+    apply_blocker();
+}
+
+static void on_filter_saved(GObject *src, GAsyncResult *res, gpointer d)
+{
+    (void) d;
+    GError *err = NULL;
+    WebKitUserContentFilter *f = webkit_user_content_filter_store_save_from_file_finish(
+        WEBKIT_USER_CONTENT_FILTER_STORE(src), res, &err);
+    if (!f) {
+        /* Say so loudly. A blocker that silently failed to compile looks
+           exactly like one that is working on a page with no ads on it. */
+        fprintf(stderr, "[n9engine] content blocker FAILED to compile: %s\n",
+                err ? err->message : "(no error)");
+        g_clear_error(&err);
+        return;
+    }
+    filter_ready(f, "compiled");
+}
+
+static void on_filter_loaded(GObject *src, GAsyncResult *res, gpointer d)
+{
+    WebKitUserContentFilterStore *store = WEBKIT_USER_CONTENT_FILTER_STORE(src);
+    WebKitUserContentFilter *f =
+        webkit_user_content_filter_store_load_finish(store, res, NULL);
+    if (f) {                         /* already compiled on an earlier run */
+        filter_ready(f, "loaded");
+        g_object_unref(store);
+        return;
+    }
+    /* Not in the store yet, so compile it. This is the slow path and runs
+       once; the identifier is fixed, so a changed ruleset needs the store
+       directory cleared (deploy.sh does that when it ships a new list). */
+    const char *json = (const char *) d;
+    GFile *gf = g_file_new_for_path(json);
+    filter_t0 = g_get_monotonic_time();
+    webkit_user_content_filter_store_save_from_file(
+        store, N9_FILTER_ID, gf, NULL, on_filter_saved, NULL);
+    g_object_unref(gf);
+    g_object_unref(store);
+}
+
+static void setup_content_blocker(WebKitUserContentManager *content)
+{
+    static char json[1024];
+    const char *env = getenv("N9_BLOCKLIST");
+    g_strlcpy(json, (env && *env) ? env : N9_BLOCKLIST_DEFAULT, sizeof json);
+    if (!g_file_test(json, G_FILE_TEST_EXISTS)) {
+        fprintf(stderr, "[n9engine] no blocklist at %s -- not blocking\n", json);
+        return;
+    }
+    /* Same shape as N9_NO_JS / N9_NO_IMAGES: the value is tested, not its
+       presence, so the shell can say "on" as well as "off", and it is in place
+       before the first load rather than arriving after it. */
+    blocker_enabled = !env_flag("N9_NO_BLOCKER");
+    char *dir = g_build_filename(g_get_user_cache_dir(), "WebMee", "filters", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    WebKitUserContentFilterStore *store = webkit_user_content_filter_store_new(dir);
+    content_manager = content;
+    filter_t0 = g_get_monotonic_time();
+    fprintf(stderr, "[n9engine] content blocker %s -> %s\n", json, dir);
+    webkit_user_content_filter_store_load(store, N9_FILTER_ID, NULL,
+                                          on_filter_loaded, json);
+    g_free(dir);
+}
 
 static void emit(const char *fmt, ...)
 {
@@ -961,6 +1074,10 @@ static void handle_command(const char *line)
                 webkit_settings_set_auto_load_images(st, val ? TRUE : FALSE);
             else if (!strcmp(key, "pagecache"))
                 webkit_settings_set_enable_page_cache(st, val ? TRUE : FALSE);
+            else if (!strcmp(key, "blocker")) {
+                blocker_enabled = val ? TRUE : FALSE;
+                apply_blocker();     /* no-op until the filter has compiled */
+            }
         }
     } else if (!strncmp(line, "cachemodel ", 11)) {
         /* DOCUMENT_VIEWER is the one that disables the memory cache outright:
@@ -1169,6 +1286,7 @@ int main(int argc, char *argv[])
                                WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
                                WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
                                NULL, NULL));
+    setup_content_blocker(content);
 
     /*
      * Process-swap-on-navigation is ON and cannot be turned off from here.

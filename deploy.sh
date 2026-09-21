@@ -23,7 +23,7 @@ STRIP="$HOME/cross/arm-harmattan/bin/arm-none-linux-gnueabi-strip"
 PKG="${PKG:-$ROOT/out/arm/pkg}"
 rm -rf "$PKG"
 mkdir -p "$PKG/bin" "$PKG/lib" "$PKG/lib/gio/modules" "$PKG/libexec/wpe-webkit-2.0" \
-         "$PKG/etc/fonts" "$PKG/etc/ssl"
+         "$PKG/etc/fonts" "$PKG/etc/ssl" "$PKG/share/webmee"
 
 cp -a "$STAGE/lib/"libWPEWebKit-2.0.so* "$PKG/lib/"
 # Keep the wpe-webkit-2.0/ level. WebKit dlopen()s the injected bundle by an
@@ -66,6 +66,12 @@ cp -a "$ROOT/out/arm/webmee-engine" "$PKG/bin/"
 # writes giomodule.cache after the tree lands.
 cp -a "$ROOT/out/arm/sysroot/bin/gio-querymodules" "$PKG/bin/" 2>/dev/null || true
 cp -a "$ROOT/deps/compat/fonts/fonts.conf" "$PKG/etc/fonts/"
+# The content blocker's ruleset. WebKit compiles it into a DFA on first use and
+# caches that under ~/.cache/WebMee/filters, keyed by a FIXED identifier -- so a
+# changed ruleset would otherwise keep matching against the old compiled copy.
+# Shipping a new list therefore has to drop the cache; the engine recompiles in
+# about 70 ms, measured on device.
+cp -a "$ROOT/app/blocklist.json" "$PKG/share/webmee/"
 
 # libepoxy resolves GL at runtime by dlopen()ing the STANDARD sonames
 # (libEGL.so.1, libGLESv2.so.2), but the PowerVR driver ships only unversioned
@@ -99,7 +105,7 @@ if [ -n "${STAGE_ONLY:-}" ]; then
     exit 0
 fi
 
-ssh -o BatchMode=yes "$HOST" "killall webmee-engine n9engine WPEWebProcess WPENetworkProcess 2>/dev/null; rm -rf $DEST; mkdir -p $DEST"
+ssh -o BatchMode=yes "$HOST" "killall webmee-engine n9engine WPEWebProcess WPENetworkProcess 2>/dev/null; rm -rf $DEST ~/.cache/WebMee/filters; mkdir -p $DEST"
 tar -C "$PKG" -cf - . | ssh -o BatchMode=yes "$HOST" "tar -C $DEST -xf -"
 
 # giomodule.cache has to be built by an ARM binary, so it is built where ARM

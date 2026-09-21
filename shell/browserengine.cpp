@@ -67,6 +67,10 @@ BrowserEngine::BrowserEngine(QObject *parent)
     // install starts from; Settings overrides it and the choice sticks.
     , m_javascript(false)
     , m_images(true)
+    // On by default. The one measurement taken was on a network that already
+    // filters ads upstream, so it could not show the gain; an ambiguous result
+    // leaves the protective default in place rather than removing it.
+    , m_blocker(true)
     , m_suggestions(true)
     , m_uaPreset("mobile")
     , m_searchEngine("DuckDuckGo")
@@ -82,6 +86,7 @@ BrowserEngine::BrowserEngine(QObject *parent)
     , m_appliedRenderScale(0)
     , m_appliedJavascript(true)
     , m_appliedImages(true)
+    , m_appliedBlocker(true)
     , m_engine(0)
     , m_engineWindow(0)
     , m_sawFrame(false)
@@ -101,6 +106,7 @@ BrowserEngine::BrowserEngine(QObject *parent)
         m_layoutWidth = cfg.value("layout/width", m_layoutWidth).toInt();
         m_javascript = cfg.value("content/javascript", m_javascript).toBool();
         m_images = cfg.value("content/images", m_images).toBool();
+        m_blocker = cfg.value("content/blocker", m_blocker).toBool();
         m_suggestions = cfg.value("suggestions/enabled", m_suggestions).toBool();
         // An install from before the base width changed has 320 persisted, and
         // the settings page no longer offers it -- it would show 345 selected
@@ -169,10 +175,15 @@ void BrowserEngine::startEngine()
     // The list is seeded from our own environment, so drop any inherited copy
     // rather than depend on which of two entries for one key the child sees.
     for (int i = env.size() - 1; i >= 0; --i)
-        if (env.at(i).startsWith("N9_NO_JS=") || env.at(i).startsWith("N9_NO_IMAGES="))
+        if (env.at(i).startsWith("N9_NO_JS=") || env.at(i).startsWith("N9_NO_IMAGES=")
+            || env.at(i).startsWith("N9_NO_BLOCKER="))
             env.removeAt(i);
     env << QString("N9_NO_JS=%1").arg(m_javascript ? 0 : 1);
     env << QString("N9_NO_IMAGES=%1").arg(m_images ? 0 : 1);
+    // Before the first load, like the other two: a filter added in reply to
+    // `ready` lands after load_uri has gone out, so the first page of every
+    // launch would be unfiltered.
+    env << QString("N9_NO_BLOCKER=%1").arg(m_blocker ? 0 : 1);
     env << QString("N9_CACHE_DIR=%1").arg(m_diskCachePath);
     env << QString("N9_DATA_DIR=%1").arg(m_dataPath);
     if (!m_downloadDir.isEmpty())
@@ -361,6 +372,7 @@ void BrowserEngine::handleEvent(const QString &line)
         send(QString("layoutwidth %1").arg(m_layoutWidth));
         m_appliedJavascript = m_javascript;
         m_appliedImages = m_images;
+        m_appliedBlocker = m_blocker;
         m_appliedUa = userAgentString();
         m_appliedRenderScale = m_renderScale;
         m_appliedLayoutWidth = m_layoutWidth;
@@ -631,9 +643,11 @@ void BrowserEngine::commitSettings()
 {
     // Only what actually changed: each viewport change costs a relayout, and a
     // redundant one is indistinguishable from a wanted one to the engine.
-    if (m_appliedJavascript != m_javascript || m_appliedImages != m_images) {
+    if (m_appliedJavascript != m_javascript || m_appliedImages != m_images
+        || m_appliedBlocker != m_blocker) {
         m_appliedJavascript = m_javascript;
         m_appliedImages = m_images;
+        m_appliedBlocker = m_blocker;
         pushSettings();
     }
     if (m_appliedUa != userAgentString()) {
@@ -656,6 +670,7 @@ void BrowserEngine::pushSettings()
 {
     send(QString("set javascript %1").arg(m_javascript ? 1 : 0));
     send(QString("set images %1").arg(m_images ? 1 : 0));
+    send(QString("set blocker %1").arg(m_blocker ? 1 : 0));
 }
 
 void BrowserEngine::setJavascriptEnabled(bool on)
@@ -663,6 +678,14 @@ void BrowserEngine::setJavascriptEnabled(bool on)
     if (m_javascript == on) return;
     m_javascript = on;
     persist("content/javascript", m_javascript);
+    emit settingsChanged();     // applied by commitSettings()
+}
+
+void BrowserEngine::setContentBlocker(bool on)
+{
+    if (m_blocker == on) return;
+    m_blocker = on;
+    persist("content/blocker", m_blocker);
     emit settingsChanged();     // applied by commitSettings()
 }
 
@@ -704,8 +727,7 @@ void BrowserEngine::setUserAgentPreset(const QString &preset)
     emit settingsChanged();     // applied by commitSettings()
 }
 
-    , m_pageCacheOn(true)
-    , m_memoryCacheOn(true)int BrowserEngine::cacheUsageMb() const
+int BrowserEngine::cacheUsageMb() const
 {
     // Recursive: WebKit nests its cache (WebKitCache/Version 16/<salt>/...), so
     // summing only the top level reported zero however full the cache was.

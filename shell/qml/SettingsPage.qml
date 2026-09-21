@@ -67,6 +67,15 @@ Page {
             Row {
                 spacing: 16
                 Switch {
+                    checked: engine.contentBlocker
+                    onCheckedChanged: engine.contentBlocker = checked
+                }
+                Label { text: qsTr("Block ads and trackers"); anchors.verticalCenter: parent.verticalCenter }
+            }
+
+            Row {
+                spacing: 16
+                Switch {
                     checked: engine.suggestionsEnabled
                     onCheckedChanged: engine.suggestionsEnabled = checked
                 }

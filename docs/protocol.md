@@ -24,7 +24,7 @@ keystroke at a time — so neither end may trim a line, only strip its terminato
 | `scale <magnification>` | Pinch result, ≥ 1.0. Raises device size and scale factor together so the CSS viewport is unchanged. Clamped by the engine to what `MAX_TEXTURE_SIZE` allows. |
 | `zoom <level>` | WebKit page zoom. Relayouts. Currently unused — pinch uses `scale`. |
 | `touch <down\|motion\|up> <slot> <x> <y>` | One touchpoint in **surface device pixels**. WebKit divides by the scale factor to get CSS pixels. |
-| `set <javascript\|images\|pagecache> <0\|1>` | Runtime settings. `pagecache` is `enable-page-cache`, i.e. the back/forward cache. |
+| `set <javascript\|images\|pagecache\|blocker> <0\|1>` | Runtime settings. `pagecache` is `enable-page-cache`, i.e. the back/forward cache. `blocker` adds or removes the compiled content filter; the filter itself stays compiled either way, so toggling is instant. |
 | `cachemodel <viewer\|browser>` | `DOCUMENT_VIEWER` or `DOCUMENT_BROWSER`. Viewer is the one that **disables the memory cache** (`WebProcessPoolGLib.cpp` sets `memoryCacheDisabled` from it); browser is the normal state. |
 | `clearmemcache` | Empty the memory cache, leaving the disk cache alone. Distinct from `clearcache`, which drops both -- dropping the disk cache frees no RAM and costs refetches. |
 | `layoutwidth <css px>` | CSS pixels the page lays out to (base 345). Wider means more CSS pixels in **both** directions, so this is also the knob for "the page does not fit vertically". |
@@ -397,6 +397,8 @@ Set by `BrowserEngine::startEngine()`.
 | `SSL_CERT_FILE` | OpenSSL's `openssldir` is inside our tree, and the device's 2011 CA store predates most roots in use today. |
 | `FONTCONFIG_FILE` | Our fonts.conf, not the device's. |
 | `N9_VIEW_RECT`, `N9_LAYOUT_WIDTH` | Initial geometry and the CSS width to lay out to (default 320). |
+| `N9_NO_BLOCKER` | Initial content-blocker state, same value-not-presence rule as the two below. Needed for the same reason: a filter added in reply to `ready` lands after `load_uri`, so the first page of every launch would be unfiltered. |
+| `N9_BLOCKLIST` | Path to the ruleset JSON, overriding the shipped one. This is how the blocker is tested without root, since `/opt` is not writable after a package install. |
 | `N9_NO_JS`, `N9_NO_IMAGES` | Initial content settings, applied before the first load. Sent on **every** launch carrying the persisted value, `1` or `0` — the engine tests the value, not presence, so it can be told "on" as well as "off". `N9_NO_JS=0` is the way to force JavaScript on for a measurement, since it now defaults off. |
 
 ## Test hooks
